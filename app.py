@@ -1,16 +1,58 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import base64
 import random
 from datetime import datetime
 
 st.set_page_config(page_title="OCR Dashboard UX", layout="wide")
 
 # ---------------------------------------------------
+# CSS: menu sidebar a bottoni con più spacing
+# ---------------------------------------------------
+st.markdown(
+    """
+    <style>
+      /* Più spazio in sidebar */
+      section[data-testid="stSidebar"] .block-container{
+        padding-top: 1.2rem;
+      }
+
+      /* Bottoni del menu: più alti, più spazio tra loro */
+      section[data-testid="stSidebar"] div.stButton > button{
+        width: 100%;
+        text-align: left;
+        padding: 0.9rem 1rem;
+        margin: 0.45rem 0;       /* spazio tra righe */
+        border-radius: 14px;
+        border: 1px solid rgba(120,120,120,0.25);
+        background: rgba(255,255,255,0.04);
+        font-size: 1.05rem;
+        line-height: 1.2rem;
+      }
+
+      /* Hover */
+      section[data-testid="stSidebar"] div.stButton > button:hover{
+        border-color: rgba(120,120,120,0.55);
+        background: rgba(255,255,255,0.08);
+      }
+
+      /* Stile "active" (lo applichiamo con un container + classe) */
+      .menu-active {
+        border-radius: 16px;
+        padding: 2px;
+        background: linear-gradient(90deg, rgba(99,102,241,0.35), rgba(16,185,129,0.25));
+      }
+      .menu-active section[data-testid="stSidebar"] div.stButton > button{
+        border-color: rgba(99,102,241,0.55) !important;
+        background: rgba(99,102,241,0.12) !important;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# ---------------------------------------------------
 # DATI MOCK (simulazione Google Sheet)
 # ---------------------------------------------------
-
 def generate_mock_data(n=25):
     vendors = ["ABC Srl", "Tech Supply", "Global Parts", "Fast Logistics", "Blue Energy"]
     statuses = ["NEW", "EMAILED"]
@@ -33,23 +75,43 @@ if "data" not in st.session_state:
 df = st.session_state.data
 
 # ---------------------------------------------------
-# SIDEBAR NAVIGATION
+# SIDEBAR NAVIGATION (emoji menu)
 # ---------------------------------------------------
+if "page" not in st.session_state:
+    st.session_state.page = "OCR"
 
-st.sidebar.title("Menu")
-page = st.sidebar.radio(
-    "Seleziona tool",
-    ["1) Scanner OCR",
-     "2) Dashboard",
-     "3) Ricerca & Filtri",
-     "4) Email semi-automatiche"]
-)
+st.sidebar.markdown("## Menu")
+
+# Definisci voci menu (emoji + label)
+menu_items = [
+    ("OCR", "📷", "Scanner OCR"),
+    ("DASH", "📊", "Dashboard"),
+    ("SEARCH", "🔎", "Ricerca & Filtri"),
+    ("EMAIL", "✉️", "Email semi-automatiche"),
+]
+
+# Render menu con più spazio tra righe e "active"
+for key, emoji, label in menu_items:
+    is_active = (st.session_state.page == key)
+
+    if is_active:
+        st.sidebar.markdown('<div class="menu-active">', unsafe_allow_html=True)
+
+    if st.sidebar.button(f"{emoji}  {label}", use_container_width=True, key=f"menu_{key}"):
+        st.session_state.page = key
+        st.rerun()
+
+    if is_active:
+        st.sidebar.markdown("</div>", unsafe_allow_html=True)
+
+st.sidebar.divider()
+
+page = st.session_state.page
 
 # ---------------------------------------------------
 # TOOL 1 - OCR MOCK
 # ---------------------------------------------------
-
-if page.startswith("1"):
+if page == "OCR":
     st.title("Scanner OCR (Simulazione UX)")
 
     col1, col2 = st.columns(2)
@@ -101,8 +163,7 @@ if page.startswith("1"):
 # ---------------------------------------------------
 # TOOL 2 - DASHBOARD
 # ---------------------------------------------------
-
-elif page.startswith("2"):
+elif page == "DASH":
     st.title("Dashboard (Mock Data)")
 
     totals = df["total"]
@@ -119,8 +180,7 @@ elif page.startswith("2"):
 # ---------------------------------------------------
 # TOOL 3 - RICERCA & FILTRI
 # ---------------------------------------------------
-
-elif page.startswith("3"):
+elif page == "SEARCH":
     st.title("Ricerca & Filtri")
 
     col1, col2, col3 = st.columns(3)
@@ -151,7 +211,6 @@ elif page.startswith("3"):
 # ---------------------------------------------------
 # TOOL 4 - EMAIL MOCK
 # ---------------------------------------------------
-
 else:
     st.title("Email semi-automatiche (UX Simulation)")
 
