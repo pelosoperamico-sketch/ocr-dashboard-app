@@ -45,29 +45,48 @@ st.markdown(
 )
 
 # ---------------------------------------------------
-# Rilevazione device (mobile vs desktop) via JS
+# Rilevazione device (mobile vs desktop) - robusta per iOS/Streamlit Cloud
 # ---------------------------------------------------
 def detect_is_mobile() -> bool:
     """
-    Ritorna True se sembra mobile/tablet, False se desktop.
-    Usa userAgent nel browser (approccio pratico per Streamlit).
+    Mobile detection pratica:
+    - se esiste query param is_mobile -> usa quello
+    - altrimenti usa JS per:
+      - rilevare userAgent + viewport width
+      - settare is_mobile sulla pagina TOP (non iframe)
     """
+    # cache
     if "is_mobile" in st.session_state:
         return st.session_state.is_mobile
 
-    # Piccolo componente HTML+JS che scrive un valore in querystring e forza rerun
-    # (workaround comune in Streamlit per leggere user agent)
+    # query param già presente?
+    qp_val = st.query_params.get("is_mobile", None)
+    if qp_val is not None:
+        st.session_state.is_mobile = (str(qp_val) == "1")
+        return st.session_state.is_mobile
+
+    # JS: imposta query param su window.top
     components.html(
         """
         <script>
         (function() {
-          const ua = navigator.userAgent || navigator.vendor || window.opera;
-          const isMobile = /android|iphone|ipad|ipod|iemobile|blackberry|opera mini/i.test(ua.toLowerCase());
-          const url = new URL(window.location.href);
-          // se già impostato, non fare nulla
-          if (url.searchParams.get("is_mobile") === null) {
-            url.searchParams.set("is_mobile", isMobile ? "1" : "0");
-            window.location.replace(url.toString());
+          try {
+            const ua = (navigator.userAgent || navigator.vendor || window.opera || "").toLowerCase();
+            const isMobileUA = /android|iphone|ipad|ipod|iemobile|blackberry|opera mini/i.test(ua);
+
+            // fallback: viewport width
+            const w = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
+            const isMobileW = w <= 768;
+
+            const isMobile = (isMobileUA || isMobileW) ? "1" : "0";
+
+            const topUrl = new URL(window.top.location.href);
+            if (!topUrl.searchParams.has("is_mobile")) {
+              topUrl.searchParams.set("is_mobile", isMobile);
+              window.top.location.replace(topUrl.toString());
+            }
+          } catch (e) {
+            // se top navigation è bloccata, non fare nulla
           }
         })();
         </script>
@@ -75,15 +94,8 @@ def detect_is_mobile() -> bool:
         height=0
     )
 
-    # Leggi query param
-    qp = st.query_params
-    val = qp.get("is_mobile", None)
-    if val is None:
-        # primo giro: la pagina verrà ricaricata dal JS
-        return False
-
-    st.session_state.is_mobile = (str(val) == "1")
-    return st.session_state.is_mobile
+    # primo giro: verrà ricaricata la pagina, nel frattempo default desktop
+    return False
 
 is_mobile = detect_is_mobile()
 
@@ -93,6 +105,7 @@ is_mobile = detect_is_mobile()
 def generate_mock_data(n=25):
     vendors = ["ABC Srl", "Tech Supply", "Global Parts", "Fast Logistics", "Blue Energy"]
     statuses = ["NEW", "EMAILED"]
+
     data = []
     for i in range(n):
         data.append({
@@ -140,20 +153,21 @@ for key, emoji, label in menu_items:
 st.sidebar.divider()
 st.sidebar.caption(f"Dispositivo rilevato: {'📱 Mobile' if is_mobile else '💻 Desktop'}")
 
+if st.sidebar.button("🔄 Reset rilevamento dispositivo"):
+    st.query_params.pop("is_mobile", None)
+    st.session_state.pop("is_mobile", None)
+    st.rerun()
+
 page = st.session_state.page
 
 # ---------------------------------------------------
-# TOOL 1 - OCR MOCK (MIGLIORATO)
-# - Mobile: SOLO camera_input
-# - Desktop: SOLO file_uploader
+# TOOL 1 - OCR MOCK (Mobile: camera only / Desktop: upload only)
 # ---------------------------------------------------
 if page == "OCR":
     st.title("Scanner OCR (Simulazione UX)")
     st.caption("📱 Da mobile: scatta una foto. 💻 Da PC: carica un file dal computer.")
 
-    # Step indicator
     st.markdown("### 1) Acquisisci documento")
-    st.write("")
 
     image_bytes = None
     filename = None
@@ -175,8 +189,8 @@ if page == "OCR":
         st.image(image_bytes, caption=f"Anteprima — {filename}", use_container_width=True)
 
         st.markdown("### 2) Estrai dati (simulazione OCR)")
-        colA, colB = st.columns([1, 1])
 
+        colA, colB = st.columns([1, 1])
         with colA:
             if st.button("Simula OCR", type="primary", use_container_width=True):
                 with st.spinner("Simulazione scansione..."):
@@ -189,7 +203,9 @@ if page == "OCR":
                     st.success("OCR completato (mock)")
 
         with colB:
-            st.button("Reset immagine", use_container_width=True, on_click=lambda: st.session_state.update({"last_extracted": None}))
+            if st.button("Reset estrazione", use_container_width=True):
+                st.session_state.last_extracted = None
+                st.rerun()
 
         extracted = st.session_state.get("last_extracted")
         if extracted:
