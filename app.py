@@ -1,23 +1,64 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import base64
 import random
 from datetime import datetime
 
-st.set_page_config(page_title="OCR Dashboard UX", layout="wide")
-
 # ---------------------------------------------------
-# DATI MOCK (simulazione Google Sheet)
+# CONFIG
 # ---------------------------------------------------
 
-def generate_mock_data(n=25):
+st.set_page_config(
+    page_title="Smart Document Manager",
+    page_icon="📊",
+    layout="wide"
+)
+
+# ---------------------------------------------------
+# STILE CUSTOM (UX più moderna)
+# ---------------------------------------------------
+
+st.markdown("""
+<style>
+.main {
+    padding-top: 1rem;
+}
+.block-container {
+    padding-top: 1rem;
+}
+.card {
+    padding: 20px;
+    border-radius: 14px;
+    background-color: #111827;
+    border: 1px solid #1f2937;
+}
+.badge-new {
+    background-color: #f59e0b;
+    padding: 4px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    color: white;
+}
+.badge-emailed {
+    background-color: #10b981;
+    padding: 4px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    color: white;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------------------------------------------
+# MOCK DATA
+# ---------------------------------------------------
+
+def generate_mock_data(n=30):
     vendors = ["ABC Srl", "Tech Supply", "Global Parts", "Fast Logistics", "Blue Energy"]
     statuses = ["NEW", "EMAILED"]
 
-    data = []
+    rows = []
     for i in range(n):
-        data.append({
+        rows.append({
             "uniqueKey": f"DOC-{1000+i}",
             "vendor": random.choice(vendors),
             "date": datetime.now().strftime("%d/%m/%Y"),
@@ -25,7 +66,7 @@ def generate_mock_data(n=25):
             "status": random.choice(statuses),
             "email": "info@example.com"
         })
-    return pd.DataFrame(data)
+    return pd.DataFrame(rows)
 
 if "data" not in st.session_state:
     st.session_state.data = generate_mock_data()
@@ -33,57 +74,64 @@ if "data" not in st.session_state:
 df = st.session_state.data
 
 # ---------------------------------------------------
-# SIDEBAR NAVIGATION
+# HEADER
 # ---------------------------------------------------
 
-st.sidebar.title("Menu")
-page = st.sidebar.radio(
-    "Seleziona tool",
-    ["1) Scanner OCR",
-     "2) Dashboard",
-     "3) Ricerca & Filtri",
-     "4) Email semi-automatiche"]
+st.markdown("## 📊 Smart Document Manager")
+st.caption("OCR • Dashboard • Ricerca • Email Automation")
+
+st.divider()
+
+# ---------------------------------------------------
+# NAV
+# ---------------------------------------------------
+
+page = st.segmented_control(
+    "Seleziona modulo",
+    ["OCR", "Dashboard", "Ricerca", "Email"],
+    default="Dashboard"
 )
 
 # ---------------------------------------------------
-# TOOL 1 - OCR MOCK
+# OCR
 # ---------------------------------------------------
 
-if page.startswith("1"):
-    st.title("Scanner OCR (Simulazione UX)")
+if page == "OCR":
+    st.subheader("📷 Scanner Documenti")
 
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([1, 1])
 
     with col1:
-        uploaded = st.file_uploader("Carica immagine", type=["jpg", "jpeg", "png"])
+        uploaded = st.file_uploader("Carica documento", type=["jpg", "jpeg", "png"])
 
     with col2:
         camera = st.camera_input("Oppure scatta foto")
 
     image_bytes = None
-
     if uploaded:
         image_bytes = uploaded.read()
     elif camera:
         image_bytes = camera.getvalue()
 
     if image_bytes:
-        st.image(image_bytes, caption="Anteprima", use_container_width=True)
+        st.image(image_bytes, use_container_width=True)
 
-        if st.button("Simula OCR", type="primary"):
-            with st.spinner("Simulazione scansione..."):
-                st.success("OCR completato (mock)")
-
+        if st.button("Avvia scansione", type="primary", use_container_width=True):
+            with st.spinner("Analisi documento in corso..."):
                 extracted = {
                     "vendor": "ABC Srl",
-                    "date": "27/02/2026",
-                    "total": 249.90
+                    "date": datetime.now().strftime("%d/%m/%Y"),
+                    "total": 349.90
                 }
 
-                st.subheader("Dati estratti")
-                st.json(extracted)
+                st.success("Documento analizzato")
 
-                if st.button("Simula salvataggio su Sheet"):
+                colA, colB, colC = st.columns(3)
+                colA.metric("Fornitore", extracted["vendor"])
+                colB.metric("Data", extracted["date"])
+                colC.metric("Totale", f"{extracted['total']} €")
+
+                if st.button("Salva documento", use_container_width=True):
                     new_row = {
                         "uniqueKey": f"DOC-{random.randint(2000,3000)}",
                         "vendor": extracted["vendor"],
@@ -96,37 +144,49 @@ if page.startswith("1"):
                         [st.session_state.data, pd.DataFrame([new_row])],
                         ignore_index=True
                     )
-                    st.success("Riga aggiunta (mock)")
+                    st.success("Documento salvato")
 
 # ---------------------------------------------------
-# TOOL 2 - DASHBOARD
+# DASHBOARD
 # ---------------------------------------------------
 
-elif page.startswith("2"):
-    st.title("Dashboard (Mock Data)")
+elif page == "Dashboard":
+    st.subheader("📈 Overview")
 
     totals = df["total"]
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Documenti", len(df))
-    c2.metric("Fornitori unici", df["vendor"].nunique())
-    c3.metric("Totale complessivo", f"{totals.sum():.2f}")
-    c4.metric("Da inviare", (df["status"] == "NEW").sum())
+    col1, col2, col3, col4 = st.columns(4)
+
+    col1.metric("Documenti", len(df))
+    col2.metric("Fornitori", df["vendor"].nunique())
+    col3.metric("Totale €", f"{totals.sum():.2f}")
+    col4.metric("Da gestire", (df["status"] == "NEW").sum())
+
+    st.divider()
 
     st.subheader("Elenco documenti")
-    st.dataframe(df, use_container_width=True)
+
+    def status_badge(val):
+        if val == "NEW":
+            return "🟠 NEW"
+        return "🟢 EMAILED"
+
+    df_display = df.copy()
+    df_display["status"] = df_display["status"].apply(status_badge)
+
+    st.dataframe(df_display, use_container_width=True)
 
 # ---------------------------------------------------
-# TOOL 3 - RICERCA & FILTRI
+# RICERCA
 # ---------------------------------------------------
 
-elif page.startswith("3"):
-    st.title("Ricerca & Filtri")
+elif page == "Ricerca":
+    st.subheader("🔎 Filtra documenti")
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        vendor_filter = st.text_input("Fornitore contiene")
+        vendor_filter = st.text_input("Fornitore")
 
     with col2:
         status_filter = st.selectbox("Status", ["", "NEW", "EMAILED"])
@@ -145,48 +205,44 @@ elif page.startswith("3"):
     if min_total > 0:
         filtered = filtered[filtered["total"] >= min_total]
 
-    st.write(f"Risultati trovati: {len(filtered)}")
+    st.write(f"{len(filtered)} risultati trovati")
     st.dataframe(filtered, use_container_width=True)
 
 # ---------------------------------------------------
-# TOOL 4 - EMAIL MOCK
+# EMAIL
 # ---------------------------------------------------
 
 else:
-    st.title("Email semi-automatiche (UX Simulation)")
+    st.subheader("✉️ Email Automation")
 
     df_view = df.copy()
-    df_view.insert(0, "select", False)
+    df_view.insert(0, "Seleziona", False)
 
     edited = st.data_editor(
         df_view,
         use_container_width=True,
-        num_rows="fixed",
-        column_config={
-            "select": st.column_config.CheckboxColumn("Seleziona")
-        }
+        num_rows="fixed"
     )
 
-    selected = edited[edited["select"] == True].drop(columns=["select"])
+    selected = edited[edited["Seleziona"] == True].drop(columns=["Seleziona"])
 
-    st.write(f"Selezionate: {len(selected)}")
+    st.write(f"Documenti selezionati: {len(selected)}")
 
     subject = st.text_input("Oggetto", "Richiesta informazioni documento")
     body = st.text_area(
-        "Testo email",
+        "Messaggio",
         "Ciao {{vendor}},\n\nTi scrivo in merito al documento {{uniqueKey}} del {{date}}.\n\nGrazie."
     )
 
     if len(selected) > 0:
         first = selected.iloc[0].to_dict()
-
         preview = body \
             .replace("{{vendor}}", first["vendor"]) \
             .replace("{{uniqueKey}}", first["uniqueKey"]) \
             .replace("{{date}}", first["date"])
 
-        st.subheader("Preview email")
+        st.subheader("Anteprima")
         st.code(preview)
 
-        if st.button("Simula invio email", type="primary"):
+        if st.button("Invia email", type="primary", use_container_width=True):
             st.success("Email inviate (simulazione)")
