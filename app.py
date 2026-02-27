@@ -7,7 +7,7 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="OCR Dashboard UX", layout="wide")
 
 # ---------------------------------------------------
-# CSS: menu sidebar a bottoni con più spacing
+# CSS: menu sidebar + top-right button + spacing
 # ---------------------------------------------------
 st.markdown(
     """
@@ -19,7 +19,7 @@ st.markdown(
         width: 100%;
         text-align: left;
         padding: 0.9rem 1rem;
-        margin: 0.55rem 0; /* più spazio tra righe */
+        margin: 0.55rem 0;
         border-radius: 14px;
         border: 1px solid rgba(120,120,120,0.25);
         background: rgba(255,255,255,0.04);
@@ -39,6 +39,9 @@ st.markdown(
         border-color: rgba(99,102,241,0.55) !important;
         background: rgba(99,102,241,0.12) !important;
       }
+
+      /* leggero spacing sopra il contenuto principale */
+      .block-container { padding-top: 1rem; }
     </style>
     """,
     unsafe_allow_html=True
@@ -48,24 +51,14 @@ st.markdown(
 # Rilevazione device (mobile vs desktop) - robusta per iOS/Streamlit Cloud
 # ---------------------------------------------------
 def detect_is_mobile() -> bool:
-    """
-    Mobile detection pratica:
-    - se esiste query param is_mobile -> usa quello
-    - altrimenti usa JS per:
-      - rilevare userAgent + viewport width
-      - settare is_mobile sulla pagina TOP (non iframe)
-    """
-    # cache
     if "is_mobile" in st.session_state:
         return st.session_state.is_mobile
 
-    # query param già presente?
     qp_val = st.query_params.get("is_mobile", None)
     if qp_val is not None:
         st.session_state.is_mobile = (str(qp_val) == "1")
         return st.session_state.is_mobile
 
-    # JS: imposta query param su window.top
     components.html(
         """
         <script>
@@ -73,28 +66,21 @@ def detect_is_mobile() -> bool:
           try {
             const ua = (navigator.userAgent || navigator.vendor || window.opera || "").toLowerCase();
             const isMobileUA = /android|iphone|ipad|ipod|iemobile|blackberry|opera mini/i.test(ua);
-
-            // fallback: viewport width
             const w = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
             const isMobileW = w <= 768;
-
             const isMobile = (isMobileUA || isMobileW) ? "1" : "0";
-
             const topUrl = new URL(window.top.location.href);
             if (!topUrl.searchParams.has("is_mobile")) {
               topUrl.searchParams.set("is_mobile", isMobile);
               window.top.location.replace(topUrl.toString());
             }
-          } catch (e) {
-            // se top navigation è bloccata, non fare nulla
-          }
+          } catch (e) {}
         })();
         </script>
         """,
         height=0
     )
 
-    # primo giro: verrà ricaricata la pagina, nel frattempo default desktop
     return False
 
 is_mobile = detect_is_mobile()
@@ -105,7 +91,6 @@ is_mobile = detect_is_mobile()
 def generate_mock_data(n=25):
     vendors = ["ABC Srl", "Tech Supply", "Global Parts", "Fast Logistics", "Blue Energy"]
     statuses = ["NEW", "EMAILED"]
-
     data = []
     for i in range(n):
         data.append({
@@ -161,12 +146,109 @@ if st.sidebar.button("🔄 Reset rilevamento dispositivo"):
 page = st.session_state.page
 
 # ---------------------------------------------------
+# Utilities (modal helpers)
+# ---------------------------------------------------
+def open_modal(name: str):
+    st.session_state[name] = True
+
+def close_modal(name: str):
+    st.session_state[name] = False
+
+if "show_alt_menu" not in st.session_state:
+    st.session_state.show_alt_menu = False
+if "modal_manual" not in st.session_state:
+    st.session_state.modal_manual = False
+if "modal_mail" not in st.session_state:
+    st.session_state.modal_mail = False
+
+# ---------------------------------------------------
 # TOOL 1 - OCR MOCK (Mobile: camera only / Desktop: upload only)
+# + Top-right "Fattura alternativa" + modali
 # ---------------------------------------------------
 if page == "OCR":
-    st.title("Scanner OCR (Simulazione UX)")
-    st.caption("📱 Da mobile: scatta una foto. 💻 Da PC: carica un file dal computer.")
+    # Header con bottone in alto a destra
+    left, right = st.columns([0.72, 0.28], vertical_alignment="top")
+    with left:
+        st.title("Scanner OCR (Simulazione UX)")
+        st.caption("📱 Da mobile: scatta una foto. 💻 Da PC: carica un file dal computer.")
+    with right:
+        st.write("")  # spazio
+        st.write("")  # spazio
+        if st.button("🧾 Fattura alternativa", type="secondary", use_container_width=True):
+            st.session_state.show_alt_menu = not st.session_state.show_alt_menu
 
+    # Menu "esploso" con 2 opzioni
+    if st.session_state.show_alt_menu:
+        with st.container(border=True):
+            st.markdown("**Scegli un'opzione**")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("✍️ Carica manualmente", use_container_width=True):
+                    st.session_state.show_alt_menu = False
+                    open_modal("modal_manual")
+                    st.rerun()
+            with c2:
+                if st.button("📩 Inoltra via mail", use_container_width=True):
+                    st.session_state.show_alt_menu = False
+                    open_modal("modal_mail")
+                    st.rerun()
+
+    st.divider()
+
+    # --- MODAL 1: Carica manualmente ---
+    if st.session_state.modal_manual:
+        with st.modal("Carica manualmente"):
+            st.write("Compila i dati della fattura (simulazione).")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                vendor = st.text_input("Fornitore *", placeholder="Es. ABC Srl")
+                invoice_no = st.text_input("Numero fattura *", placeholder="Es. 2026/001")
+                email = st.text_input("Email fornitore", placeholder="Es. info@fornitore.it")
+            with col2:
+                date = st.date_input("Data documento *")
+                total = st.number_input("Totale (€) *", min_value=0.0, step=1.0, format="%.2f")
+                status = st.selectbox("Stato", ["NEW", "EMAILED"], index=0)
+
+            notes = st.text_area("Note", placeholder="Inserisci eventuali note...")
+
+            st.write("")
+            a, b = st.columns(2)
+            with a:
+                if st.button("Annulla", use_container_width=True):
+                    close_modal("modal_manual")
+                    st.rerun()
+            with b:
+                if st.button("Salva (mock)", type="primary", use_container_width=True):
+                    if not vendor.strip() or not invoice_no.strip() or total <= 0:
+                        st.error("Compila i campi obbligatori: Fornitore, Numero fattura e Totale > 0.")
+                    else:
+                        new_row = {
+                            "uniqueKey": f"MAN-{random.randint(2000,3000)}",
+                            "vendor": vendor.strip(),
+                            "date": date.strftime("%d/%m/%Y"),
+                            "total": float(total),
+                            "status": status,
+                            "email": email.strip() if email else "info@example.com"
+                        }
+                        st.session_state.data = pd.concat(
+                            [st.session_state.data, pd.DataFrame([new_row])],
+                            ignore_index=True
+                        )
+                        close_modal("modal_manual")
+                        st.success("Fattura salvata (mock).")
+                        st.rerun()
+
+    # --- MODAL 2: Inoltra via mail ---
+    if st.session_state.modal_mail:
+        with st.modal("Inoltra via mail"):
+            st.markdown("inoltra alla seguente mail le fatture che ti interessa scannerizzare: **prova@streamlit.it**")
+            st.write("")
+            if st.button("Chiudi", use_container_width=True):
+                close_modal("modal_mail")
+                st.rerun()
+
+    # Journey acquisizione documento
     st.markdown("### 1) Acquisisci documento")
 
     image_bytes = None
