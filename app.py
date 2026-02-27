@@ -7,7 +7,7 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="OCR Dashboard UX", layout="wide")
 
 # ---------------------------------------------------
-# CSS: menu sidebar + top-right button + spacing
+# CSS: sidebar menu + top-right button spacing
 # ---------------------------------------------------
 st.markdown(
     """
@@ -19,7 +19,7 @@ st.markdown(
         width: 100%;
         text-align: left;
         padding: 0.9rem 1rem;
-        margin: 0.55rem 0;
+        margin: 0.65rem 0;
         border-radius: 14px;
         border: 1px solid rgba(120,120,120,0.25);
         background: rgba(255,255,255,0.04);
@@ -39,16 +39,18 @@ st.markdown(
         border-color: rgba(99,102,241,0.55) !important;
         background: rgba(99,102,241,0.12) !important;
       }
-
-      /* leggero spacing sopra il contenuto principale */
-      .block-container { padding-top: 1rem; }
+      .top-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.5rem;
+      }
     </style>
     """,
     unsafe_allow_html=True
 )
 
 # ---------------------------------------------------
-# Rilevazione device (mobile vs desktop) - robusta per iOS/Streamlit Cloud
+# Device detect (robusto su iOS/Cloud)
 # ---------------------------------------------------
 def detect_is_mobile() -> bool:
     if "is_mobile" in st.session_state:
@@ -69,6 +71,7 @@ def detect_is_mobile() -> bool:
             const w = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
             const isMobileW = w <= 768;
             const isMobile = (isMobileUA || isMobileW) ? "1" : "0";
+
             const topUrl = new URL(window.top.location.href);
             if (!topUrl.searchParams.has("is_mobile")) {
               topUrl.searchParams.set("is_mobile", isMobile);
@@ -80,13 +83,31 @@ def detect_is_mobile() -> bool:
         """,
         height=0
     )
-
     return False
 
 is_mobile = detect_is_mobile()
 
 # ---------------------------------------------------
-# DATI MOCK (simulazione Google Sheet)
+# Dialog compatibility helper
+# - usa st.dialog se esiste
+# - altrimenti fallback in-page (container)
+# ---------------------------------------------------
+HAS_DIALOG = hasattr(st, "dialog")
+
+def show_dialog(title: str):
+    """
+    Decorator/factory per creare un dialog compatibile.
+    Uso:
+      with show_dialog("Titolo") as _:
+          ...
+    """
+    if HAS_DIALOG:
+        return st.dialog(title)
+    # fallback: container "popup-like"
+    return st.container(border=True)
+
+# ---------------------------------------------------
+# MOCK DATA
 # ---------------------------------------------------
 def generate_mock_data(n=25):
     vendors = ["ABC Srl", "Tech Supply", "Global Parts", "Fast Logistics", "Blue Energy"]
@@ -109,7 +130,7 @@ if "data" not in st.session_state:
 df = st.session_state.data
 
 # ---------------------------------------------------
-# SIDEBAR NAVIGATION (emoji menu)
+# SIDEBAR NAV (emoji menu)
 # ---------------------------------------------------
 if "page" not in st.session_state:
     st.session_state.page = "OCR"
@@ -137,7 +158,6 @@ for key, emoji, label in menu_items:
 
 st.sidebar.divider()
 st.sidebar.caption(f"Dispositivo rilevato: {'📱 Mobile' if is_mobile else '💻 Desktop'}")
-
 if st.sidebar.button("🔄 Reset rilevamento dispositivo"):
     st.query_params.pop("is_mobile", None)
     st.session_state.pop("is_mobile", None)
@@ -146,38 +166,31 @@ if st.sidebar.button("🔄 Reset rilevamento dispositivo"):
 page = st.session_state.page
 
 # ---------------------------------------------------
-# Utilities (modal helpers)
+# State for "Fattura alternativa"
 # ---------------------------------------------------
-def open_modal(name: str):
-    st.session_state[name] = True
-
-def close_modal(name: str):
-    st.session_state[name] = False
-
 if "show_alt_menu" not in st.session_state:
     st.session_state.show_alt_menu = False
-if "modal_manual" not in st.session_state:
-    st.session_state.modal_manual = False
-if "modal_mail" not in st.session_state:
-    st.session_state.modal_mail = False
+if "open_manual" not in st.session_state:
+    st.session_state.open_manual = False
+if "open_mail" not in st.session_state:
+    st.session_state.open_mail = False
 
 # ---------------------------------------------------
-# TOOL 1 - OCR MOCK (Mobile: camera only / Desktop: upload only)
-# + Top-right "Fattura alternativa" + modali
+# TOOL 1 - OCR
 # ---------------------------------------------------
 if page == "OCR":
-    # Header con bottone in alto a destra
+    # Header row: title left, action button right
     left, right = st.columns([0.72, 0.28], vertical_alignment="top")
     with left:
         st.title("Scanner OCR (Simulazione UX)")
         st.caption("📱 Da mobile: scatta una foto. 💻 Da PC: carica un file dal computer.")
     with right:
-        st.write("")  # spazio
-        st.write("")  # spazio
-        if st.button("🧾 Fattura alternativa", type="secondary", use_container_width=True):
+        st.write("")
+        st.write("")
+        if st.button("🧾 Fattura alternativa", use_container_width=True):
             st.session_state.show_alt_menu = not st.session_state.show_alt_menu
 
-    # Menu "esploso" con 2 opzioni
+    # Dropdown "esploso"
     if st.session_state.show_alt_menu:
         with st.container(border=True):
             st.markdown("**Scegli un'opzione**")
@@ -185,19 +198,19 @@ if page == "OCR":
             with c1:
                 if st.button("✍️ Carica manualmente", use_container_width=True):
                     st.session_state.show_alt_menu = False
-                    open_modal("modal_manual")
+                    st.session_state.open_manual = True
                     st.rerun()
             with c2:
                 if st.button("📩 Inoltra via mail", use_container_width=True):
                     st.session_state.show_alt_menu = False
-                    open_modal("modal_mail")
+                    st.session_state.open_mail = True
                     st.rerun()
 
     st.divider()
 
-    # --- MODAL 1: Carica manualmente ---
-    if st.session_state.modal_manual:
-        with st.modal("Carica manualmente"):
+    # --- POPUP / DIALOG: Carica manualmente ---
+    if st.session_state.open_manual:
+        with show_dialog("Carica manualmente"):
             st.write("Compila i dati della fattura (simulazione).")
 
             col1, col2 = st.columns(2)
@@ -210,21 +223,20 @@ if page == "OCR":
                 total = st.number_input("Totale (€) *", min_value=0.0, step=1.0, format="%.2f")
                 status = st.selectbox("Stato", ["NEW", "EMAILED"], index=0)
 
-            notes = st.text_area("Note", placeholder="Inserisci eventuali note...")
+            st.text_area("Note", placeholder="Inserisci eventuali note...")
 
-            st.write("")
             a, b = st.columns(2)
             with a:
-                if st.button("Annulla", use_container_width=True):
-                    close_modal("modal_manual")
+                if st.button("Annulla", use_container_width=True, key="manual_cancel"):
+                    st.session_state.open_manual = False
                     st.rerun()
             with b:
-                if st.button("Salva (mock)", type="primary", use_container_width=True):
+                if st.button("Salva (mock)", type="primary", use_container_width=True, key="manual_save"):
                     if not vendor.strip() or not invoice_no.strip() or total <= 0:
                         st.error("Compila i campi obbligatori: Fornitore, Numero fattura e Totale > 0.")
                     else:
                         new_row = {
-                            "uniqueKey": f"MAN-{random.randint(2000,3000)}",
+                            "uniqueKey": f"MAN-{random.randint(2000, 3000)}",
                             "vendor": vendor.strip(),
                             "date": date.strftime("%d/%m/%Y"),
                             "total": float(total),
@@ -235,22 +247,24 @@ if page == "OCR":
                             [st.session_state.data, pd.DataFrame([new_row])],
                             ignore_index=True
                         )
-                        close_modal("modal_manual")
+                        st.session_state.open_manual = False
                         st.success("Fattura salvata (mock).")
                         st.rerun()
 
-    # --- MODAL 2: Inoltra via mail ---
-    if st.session_state.modal_mail:
-        with st.modal("Inoltra via mail"):
-            st.markdown("inoltra alla seguente mail le fatture che ti interessa scannerizzare: **prova@streamlit.it**")
+    # --- POPUP / DIALOG: Inoltra via mail ---
+    if st.session_state.open_mail:
+        with show_dialog("Inoltra via mail"):
+            st.markdown(
+                "inoltra alla seguente mail le fatture che ti interessa scannerizzare: "
+                "**prova@streamlit.it**"
+            )
             st.write("")
-            if st.button("Chiudi", use_container_width=True):
-                close_modal("modal_mail")
+            if st.button("Chiudi", use_container_width=True, key="mail_close"):
+                st.session_state.open_mail = False
                 st.rerun()
 
-    # Journey acquisizione documento
+    # Journey acquisizione documento (Mobile camera only / Desktop upload only)
     st.markdown("### 1) Acquisisci documento")
-
     image_bytes = None
     filename = None
 
@@ -271,7 +285,6 @@ if page == "OCR":
         st.image(image_bytes, caption=f"Anteprima — {filename}", use_container_width=True)
 
         st.markdown("### 2) Estrai dati (simulazione OCR)")
-
         colA, colB = st.columns([1, 1])
         with colA:
             if st.button("Simula OCR", type="primary", use_container_width=True):
@@ -283,7 +296,6 @@ if page == "OCR":
                     }
                     st.session_state.last_extracted = extracted
                     st.success("OCR completato (mock)")
-
         with colB:
             if st.button("Reset estrazione", use_container_width=True):
                 st.session_state.last_extracted = None
@@ -297,7 +309,7 @@ if page == "OCR":
             st.markdown("### 3) Salva nel database (mock)")
             if st.button("Simula salvataggio su Sheet", use_container_width=True):
                 new_row = {
-                    "uniqueKey": f"DOC-{random.randint(2000,3000)}",
+                    "uniqueKey": f"DOC-{random.randint(2000, 3000)}",
                     "vendor": extracted["vendor"],
                     "date": extracted["date"],
                     "total": extracted["total"],
@@ -315,8 +327,8 @@ if page == "OCR":
 # ---------------------------------------------------
 elif page == "DASH":
     st.title("Dashboard (Mock Data)")
-
     totals = df["total"]
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Documenti", len(df))
     c2.metric("Fornitori unici", df["vendor"].nunique())
@@ -327,7 +339,7 @@ elif page == "DASH":
     st.dataframe(df, use_container_width=True)
 
 # ---------------------------------------------------
-# TOOL 3 - RICERCA & FILTRI
+# TOOL 3 - SEARCH
 # ---------------------------------------------------
 elif page == "SEARCH":
     st.title("Ricerca & Filtri")
@@ -352,7 +364,7 @@ elif page == "SEARCH":
     st.dataframe(filtered, use_container_width=True)
 
 # ---------------------------------------------------
-# TOOL 4 - EMAIL MOCK
+# TOOL 4 - EMAIL
 # ---------------------------------------------------
 else:
     st.title("Email semi-automatiche (UX Simulation)")
