@@ -7,7 +7,7 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="OCR Dashboard UX", layout="wide")
 
 # ---------------------------------------------------
-# CSS: sidebar menu + spacing + top action
+# CSS: sidebar menu + spacing + dropdown menu style
 # ---------------------------------------------------
 st.markdown(
     """
@@ -46,6 +46,34 @@ st.markdown(
         padding: 16px;
         background: rgba(255,255,255,0.03);
       }
+
+      /* Dropdown container style (simile screenshot) */
+      .drop-panel{
+        border: 1px solid rgba(120,120,120,0.35);
+        border-radius: 14px;
+        background: rgba(17,24,39,0.95);
+        padding: 8px;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.35);
+      }
+
+      /* Togli margini tra i bottoni della lista */
+      .drop-panel div.stButton > button{
+        width: 100%;
+        text-align: left;
+        padding: 0.7rem 0.8rem;
+        margin: 0.15rem 0;
+        border-radius: 10px;
+        border: 1px solid rgba(120,120,120,0.0);
+        background: rgba(255,255,255,0.0);
+        font-size: 1.0rem;
+      }
+      .drop-panel div.stButton > button:hover{
+        background: rgba(255,255,255,0.06);
+        border-color: rgba(120,120,120,0.12);
+      }
+
+      /* Spazio sopra il contenuto principale */
+      .block-container { padding-top: 1rem; }
     </style>
     """,
     unsafe_allow_html=True
@@ -149,7 +177,7 @@ if st.sidebar.button("🔄 Reset rilevamento dispositivo"):
 page = st.session_state.page
 
 # ---------------------------------------------------
-# State per "Fattura alternativa" + popups
+# State per dropdown + popups
 # ---------------------------------------------------
 if "show_alt_menu" not in st.session_state:
     st.session_state.show_alt_menu = False
@@ -158,7 +186,7 @@ if "popup_manual" not in st.session_state:
 if "popup_mail" not in st.session_state:
     st.session_state.popup_mail = False
 
-HAS_DIALOG = hasattr(st, "dialog")  # dialog decorator availability
+HAS_DIALOG = hasattr(st, "dialog")
 
 # ---------------------------------------------------
 # Dialog definitions (solo se supportate)
@@ -232,23 +260,32 @@ if page == "OCR":
         if st.button("🧾 Fattura alternativa", use_container_width=True, key="alt_btn"):
             st.session_state.show_alt_menu = not st.session_state.show_alt_menu
 
-    # "Explode list" con 2 opzioni
-    if st.session_state.show_alt_menu:
-        with st.container(border=True):
-            st.markdown("**Scegli un'opzione**")
-            c1, c2 = st.columns(2)
-            with c1:
-                if st.button("✍️ Carica manualmente", use_container_width=True, key="alt_manual"):
-                    st.session_state.show_alt_menu = False
-                    st.session_state.popup_manual = True
-                    st.session_state.popup_mail = False
-                    st.rerun()
-            with c2:
-                if st.button("📩 Inoltra via mail", use_container_width=True, key="alt_mail"):
-                    st.session_state.show_alt_menu = False
-                    st.session_state.popup_mail = True
-                    st.session_state.popup_manual = False
-                    st.rerun()
+        # DROPDOWN: pannello verticale sotto il bottone (come screenshot)
+        if st.session_state.show_alt_menu:
+            st.markdown('<div class="drop-panel">', unsafe_allow_html=True)
+
+            # Riga 1
+            if st.button("⬆️  Digitalizar archivo/s", use_container_width=True, key="drop_upload"):
+                # Qui per ora non fai nulla (è solo UX), oppure puoi chiudere menu
+                st.session_state.show_alt_menu = False
+                st.toast("Opzione (UX) — Digitalizar archivo/s", icon="⬆️")
+                st.rerun()
+
+            # Riga 2 (manuale)
+            if st.button("✍️  Crear gasto manual", use_container_width=True, key="drop_manual"):
+                st.session_state.show_alt_menu = False
+                st.session_state.popup_manual = True
+                st.session_state.popup_mail = False
+                st.rerun()
+
+            # Riga 3 (mail)
+            if st.button("✉️  Por correo electrónico", use_container_width=True, key="drop_mail"):
+                st.session_state.show_alt_menu = False
+                st.session_state.popup_mail = True
+                st.session_state.popup_manual = False
+                st.rerun()
+
+            st.markdown("</div>", unsafe_allow_html=True)
 
     st.divider()
 
