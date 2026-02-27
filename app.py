@@ -7,14 +7,13 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="OCR Dashboard UX", layout="wide")
 
 # ---------------------------------------------------
-# CSS: sidebar menu + top-right button spacing
+# CSS: sidebar menu + spacing + top action
 # ---------------------------------------------------
 st.markdown(
     """
     <style>
-      section[data-testid="stSidebar"] .block-container{
-        padding-top: 1.2rem;
-      }
+      section[data-testid="stSidebar"] .block-container{ padding-top: 1.2rem; }
+
       section[data-testid="stSidebar"] div.stButton > button{
         width: 100%;
         text-align: left;
@@ -30,7 +29,7 @@ st.markdown(
         border-color: rgba(120,120,120,0.55);
         background: rgba(255,255,255,0.08);
       }
-      .menu-active {
+      .menu-active{
         border-radius: 16px;
         padding: 2px;
         background: linear-gradient(90deg, rgba(99,102,241,0.35), rgba(16,185,129,0.25));
@@ -39,10 +38,13 @@ st.markdown(
         border-color: rgba(99,102,241,0.55) !important;
         background: rgba(99,102,241,0.12) !important;
       }
-      .top-actions {
-        display: flex;
-        justify-content: flex-end;
-        gap: 0.5rem;
+
+      /* "popup-like" fallback panel */
+      .popup-like{
+        border: 1px solid rgba(120,120,120,0.35);
+        border-radius: 16px;
+        padding: 16px;
+        background: rgba(255,255,255,0.03);
       }
     </style>
     """,
@@ -86,25 +88,6 @@ def detect_is_mobile() -> bool:
     return False
 
 is_mobile = detect_is_mobile()
-
-# ---------------------------------------------------
-# Dialog compatibility helper
-# - usa st.dialog se esiste
-# - altrimenti fallback in-page (container)
-# ---------------------------------------------------
-HAS_DIALOG = hasattr(st, "dialog")
-
-def show_dialog(title: str):
-    """
-    Decorator/factory per creare un dialog compatibile.
-    Uso:
-      with show_dialog("Titolo") as _:
-          ...
-    """
-    if HAS_DIALOG:
-        return st.dialog(title)
-    # fallback: container "popup-like"
-    return st.container(border=True)
 
 # ---------------------------------------------------
 # MOCK DATA
@@ -166,20 +149,79 @@ if st.sidebar.button("🔄 Reset rilevamento dispositivo"):
 page = st.session_state.page
 
 # ---------------------------------------------------
-# State for "Fattura alternativa"
+# State per "Fattura alternativa" + popups
 # ---------------------------------------------------
 if "show_alt_menu" not in st.session_state:
     st.session_state.show_alt_menu = False
-if "open_manual" not in st.session_state:
-    st.session_state.open_manual = False
-if "open_mail" not in st.session_state:
-    st.session_state.open_mail = False
+if "popup_manual" not in st.session_state:
+    st.session_state.popup_manual = False
+if "popup_mail" not in st.session_state:
+    st.session_state.popup_mail = False
+
+HAS_DIALOG = hasattr(st, "dialog")  # dialog decorator availability
+
+# ---------------------------------------------------
+# Dialog definitions (solo se supportate)
+# ---------------------------------------------------
+if HAS_DIALOG:
+    @st.dialog("Carica manualmente")
+    def manual_dialog():
+        st.write("Compila i dati della fattura (simulazione).")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            vendor = st.text_input("Fornitore *", placeholder="Es. ABC Srl", key="m_vendor")
+            invoice_no = st.text_input("Numero fattura *", placeholder="Es. 2026/001", key="m_invoice")
+            email = st.text_input("Email fornitore", placeholder="Es. info@fornitore.it", key="m_email")
+        with col2:
+            date = st.date_input("Data documento *", key="m_date")
+            total = st.number_input("Totale (€) *", min_value=0.0, step=1.0, format="%.2f", key="m_total")
+            status = st.selectbox("Stato", ["NEW", "EMAILED"], index=0, key="m_status")
+
+        st.text_area("Note", placeholder="Inserisci eventuali note...", key="m_notes")
+
+        a, b = st.columns(2)
+        with a:
+            if st.button("Annulla", use_container_width=True, key="m_cancel"):
+                st.session_state.popup_manual = False
+                st.rerun()
+        with b:
+            if st.button("Salva (mock)", type="primary", use_container_width=True, key="m_save"):
+                if not vendor.strip() or not invoice_no.strip() or total <= 0:
+                    st.error("Compila i campi obbligatori: Fornitore, Numero fattura e Totale > 0.")
+                else:
+                    new_row = {
+                        "uniqueKey": f"MAN-{random.randint(2000,3000)}",
+                        "vendor": vendor.strip(),
+                        "date": date.strftime("%d/%m/%Y"),
+                        "total": float(total),
+                        "status": status,
+                        "email": email.strip() if email else "info@example.com"
+                    }
+                    st.session_state.data = pd.concat(
+                        [st.session_state.data, pd.DataFrame([new_row])],
+                        ignore_index=True
+                    )
+                    st.session_state.popup_manual = False
+                    st.success("Fattura salvata (mock).")
+                    st.rerun()
+
+    @st.dialog("Inoltra via mail")
+    def mail_dialog():
+        st.markdown(
+            "inoltra alla seguente mail le fatture che ti interessa scannerizzare: "
+            "**prova@streamlit.it**"
+        )
+        st.write("")
+        if st.button("Chiudi", use_container_width=True, key="mail_close"):
+            st.session_state.popup_mail = False
+            st.rerun()
 
 # ---------------------------------------------------
 # TOOL 1 - OCR
 # ---------------------------------------------------
 if page == "OCR":
-    # Header row: title left, action button right
+    # Header con bottone in alto a destra
     left, right = st.columns([0.72, 0.28], vertical_alignment="top")
     with left:
         st.title("Scanner OCR (Simulazione UX)")
@@ -187,56 +229,62 @@ if page == "OCR":
     with right:
         st.write("")
         st.write("")
-        if st.button("🧾 Fattura alternativa", use_container_width=True):
+        if st.button("🧾 Fattura alternativa", use_container_width=True, key="alt_btn"):
             st.session_state.show_alt_menu = not st.session_state.show_alt_menu
 
-    # Dropdown "esploso"
+    # "Explode list" con 2 opzioni
     if st.session_state.show_alt_menu:
         with st.container(border=True):
             st.markdown("**Scegli un'opzione**")
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("✍️ Carica manualmente", use_container_width=True):
+                if st.button("✍️ Carica manualmente", use_container_width=True, key="alt_manual"):
                     st.session_state.show_alt_menu = False
-                    st.session_state.open_manual = True
+                    st.session_state.popup_manual = True
+                    st.session_state.popup_mail = False
                     st.rerun()
             with c2:
-                if st.button("📩 Inoltra via mail", use_container_width=True):
+                if st.button("📩 Inoltra via mail", use_container_width=True, key="alt_mail"):
                     st.session_state.show_alt_menu = False
-                    st.session_state.open_mail = True
+                    st.session_state.popup_mail = True
+                    st.session_state.popup_manual = False
                     st.rerun()
 
     st.divider()
 
-    # --- POPUP / DIALOG: Carica manualmente ---
-    if st.session_state.open_manual:
-        with show_dialog("Carica manualmente"):
+    # Pop-up rendering (dialog se possibile, altrimenti fallback)
+    if st.session_state.popup_manual:
+        if HAS_DIALOG:
+            manual_dialog()
+        else:
+            st.markdown('<div class="popup-like">', unsafe_allow_html=True)
+            st.subheader("Carica manualmente")
             st.write("Compila i dati della fattura (simulazione).")
 
             col1, col2 = st.columns(2)
             with col1:
-                vendor = st.text_input("Fornitore *", placeholder="Es. ABC Srl")
-                invoice_no = st.text_input("Numero fattura *", placeholder="Es. 2026/001")
-                email = st.text_input("Email fornitore", placeholder="Es. info@fornitore.it")
+                vendor = st.text_input("Fornitore *", placeholder="Es. ABC Srl", key="fm_vendor")
+                invoice_no = st.text_input("Numero fattura *", placeholder="Es. 2026/001", key="fm_invoice")
+                email = st.text_input("Email fornitore", placeholder="Es. info@fornitore.it", key="fm_email")
             with col2:
-                date = st.date_input("Data documento *")
-                total = st.number_input("Totale (€) *", min_value=0.0, step=1.0, format="%.2f")
-                status = st.selectbox("Stato", ["NEW", "EMAILED"], index=0)
+                date = st.date_input("Data documento *", key="fm_date")
+                total = st.number_input("Totale (€) *", min_value=0.0, step=1.0, format="%.2f", key="fm_total")
+                status = st.selectbox("Stato", ["NEW", "EMAILED"], index=0, key="fm_status")
 
-            st.text_area("Note", placeholder="Inserisci eventuali note...")
+            st.text_area("Note", placeholder="Inserisci eventuali note...", key="fm_notes")
 
             a, b = st.columns(2)
             with a:
-                if st.button("Annulla", use_container_width=True, key="manual_cancel"):
-                    st.session_state.open_manual = False
+                if st.button("Annulla", use_container_width=True, key="fm_cancel"):
+                    st.session_state.popup_manual = False
                     st.rerun()
             with b:
-                if st.button("Salva (mock)", type="primary", use_container_width=True, key="manual_save"):
+                if st.button("Salva (mock)", type="primary", use_container_width=True, key="fm_save"):
                     if not vendor.strip() or not invoice_no.strip() or total <= 0:
                         st.error("Compila i campi obbligatori: Fornitore, Numero fattura e Totale > 0.")
                     else:
                         new_row = {
-                            "uniqueKey": f"MAN-{random.randint(2000, 3000)}",
+                            "uniqueKey": f"MAN-{random.randint(2000,3000)}",
                             "vendor": vendor.strip(),
                             "date": date.strftime("%d/%m/%Y"),
                             "total": float(total),
@@ -247,24 +295,30 @@ if page == "OCR":
                             [st.session_state.data, pd.DataFrame([new_row])],
                             ignore_index=True
                         )
-                        st.session_state.open_manual = False
+                        st.session_state.popup_manual = False
                         st.success("Fattura salvata (mock).")
                         st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
-    # --- POPUP / DIALOG: Inoltra via mail ---
-    if st.session_state.open_mail:
-        with show_dialog("Inoltra via mail"):
+    if st.session_state.popup_mail:
+        if HAS_DIALOG:
+            mail_dialog()
+        else:
+            st.markdown('<div class="popup-like">', unsafe_allow_html=True)
+            st.subheader("Inoltra via mail")
             st.markdown(
                 "inoltra alla seguente mail le fatture che ti interessa scannerizzare: "
                 "**prova@streamlit.it**"
             )
             st.write("")
-            if st.button("Chiudi", use_container_width=True, key="mail_close"):
-                st.session_state.open_mail = False
+            if st.button("Chiudi", use_container_width=True, key="fm_mail_close"):
+                st.session_state.popup_mail = False
                 st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
     # Journey acquisizione documento (Mobile camera only / Desktop upload only)
     st.markdown("### 1) Acquisisci documento")
+
     image_bytes = None
     filename = None
 
