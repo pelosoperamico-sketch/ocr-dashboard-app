@@ -1,230 +1,192 @@
-import base64
-import json
-import pandas as pd
-import requests
 import streamlit as st
+import pandas as pd
+import numpy as np
+import base64
+import random
+from datetime import datetime
 
-st.set_page_config(page_title="OCR + Sheets + Email", layout="wide")
+st.set_page_config(page_title="OCR Dashboard UX", layout="wide")
 
-# --- Secrets ---
-if "GAS_BASE_URL" not in st.secrets:
-    st.error("Manca GAS_BASE_URL nei Secrets. Vai su Settings → Secrets e aggiungilo.")
-    st.stop()
+# ---------------------------------------------------
+# DATI MOCK (simulazione Google Sheet)
+# ---------------------------------------------------
 
-GAS_BASE_URL = st.secrets["GAS_BASE_URL"]
+def generate_mock_data(n=25):
+    vendors = ["ABC Srl", "Tech Supply", "Global Parts", "Fast Logistics", "Blue Energy"]
+    statuses = ["NEW", "EMAILED"]
 
+    data = []
+    for i in range(n):
+        data.append({
+            "uniqueKey": f"DOC-{1000+i}",
+            "vendor": random.choice(vendors),
+            "date": datetime.now().strftime("%d/%m/%Y"),
+            "total": round(random.uniform(50, 1500), 2),
+            "status": random.choice(statuses),
+            "email": "info@example.com"
+        })
+    return pd.DataFrame(data)
 
-# --- Helpers ---
-def gas_post(path: str, payload: dict, timeout=90):
-    r = requests.post(GAS_BASE_URL, params={"path": path}, json=payload, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+if "data" not in st.session_state:
+    st.session_state.data = generate_mock_data()
 
-def gas_get(mode: str, filters: dict | None = None, timeout=60):
-    params = {"mode": mode}
-    if filters is not None:
-        params["filters"] = json.dumps(filters)
-    r = requests.get(GAS_BASE_URL, params=params, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+df = st.session_state.data
 
-def to_b64(b: bytes) -> str:
-    return base64.b64encode(b).decode("utf-8")
+# ---------------------------------------------------
+# SIDEBAR NAVIGATION
+# ---------------------------------------------------
 
-def safe_df(rows):
-    df = pd.DataFrame(rows or [])
-    # normalizza colonne attese (se mancano, le crea)
-    for col in ["uniqueKey", "vendor", "date", "total", "status", "email", "timestamp", "rawText"]:
-        if col not in df.columns:
-            df[col] = None
-    return df
-
-
-# --- Sidebar ---
 st.sidebar.title("Menu")
 page = st.sidebar.radio(
     "Seleziona tool",
-    ["1) Scanner OCR", "2) Dashboard", "3) Ricerca", "4) Email semi-automatiche"]
+    ["1) Scanner OCR",
+     "2) Dashboard",
+     "3) Ricerca & Filtri",
+     "4) Email semi-automatiche"]
 )
 
-# Piccolo check connessione
-with st.sidebar.expander("Test connessione"):
-    if st.button("Ping GAS"):
-        try:
-            res = gas_get("dashboard")
-            if res.get("ok"):
-                st.success("OK: GAS raggiungibile")
-            else:
-                st.error(res)
-        except Exception as e:
-            st.error(str(e))
+# ---------------------------------------------------
+# TOOL 1 - OCR MOCK
+# ---------------------------------------------------
 
-# -------------------- 1) OCR --------------------
 if page.startswith("1"):
-    st.title("Tool 1 — Carica o scatta foto → OCR → salva su Google Sheet")
+    st.title("Scanner OCR (Simulazione UX)")
 
     col1, col2 = st.columns(2)
+
     with col1:
-        up = st.file_uploader("Carica immagine", type=["jpg", "jpeg", "png"])
+        uploaded = st.file_uploader("Carica immagine", type=["jpg", "jpeg", "png"])
+
     with col2:
-        cam = st.camera_input("Oppure scatta dal cellulare")
+        camera = st.camera_input("Oppure scatta foto")
 
     image_bytes = None
-    filename = None
 
-    if up is not None:
-        image_bytes = up.read()
-        filename = up.name
-    elif cam is not None:
-        image_bytes = cam.getvalue()
-        filename = "camera.jpg"
+    if uploaded:
+        image_bytes = uploaded.read()
+    elif camera:
+        image_bytes = camera.getvalue()
 
     if image_bytes:
         st.image(image_bytes, caption="Anteprima", use_container_width=True)
 
-        if st.button("Esegui OCR e salva", type="primary"):
-            with st.spinner("OCR in corso..."):
-                payload = {"filename": filename, "imageBase64": to_b64(image_bytes)}
-                res = gas_post("ocr", payload, timeout=120)
+        if st.button("Simula OCR", type="primary"):
+            with st.spinner("Simulazione scansione..."):
+                st.success("OCR completato (mock)")
 
-            if res.get("ok"):
-                if res.get("dedup"):
-                    st.info("Documento già presente (dedup).")
-                else:
-                    st.success("Salvato su Google Sheet!")
+                extracted = {
+                    "vendor": "ABC Srl",
+                    "date": "27/02/2026",
+                    "total": 249.90
+                }
+
                 st.subheader("Dati estratti")
-                st.json(res.get("extracted", {}))
-                st.caption(f"uniqueKey: {res.get('uniqueKey')}")
-            else:
-                st.error(res)
+                st.json(extracted)
 
-# -------------------- 2) Dashboard --------------------
+                if st.button("Simula salvataggio su Sheet"):
+                    new_row = {
+                        "uniqueKey": f"DOC-{random.randint(2000,3000)}",
+                        "vendor": extracted["vendor"],
+                        "date": extracted["date"],
+                        "total": extracted["total"],
+                        "status": "NEW",
+                        "email": "info@example.com"
+                    }
+                    st.session_state.data = pd.concat(
+                        [st.session_state.data, pd.DataFrame([new_row])],
+                        ignore_index=True
+                    )
+                    st.success("Riga aggiunta (mock)")
+
+# ---------------------------------------------------
+# TOOL 2 - DASHBOARD
+# ---------------------------------------------------
+
 elif page.startswith("2"):
-    st.title("Tool 2 — Dashboard basata su Google Sheet")
+    st.title("Dashboard (Mock Data)")
 
-    try:
-        res = gas_get("dashboard")
-    except Exception as e:
-        st.error(f"Errore chiamando GAS: {e}")
-        st.stop()
-
-    if not res.get("ok"):
-        st.error(res)
-        st.stop()
-
-    df = safe_df(res.get("rows"))
-    if df.empty:
-        st.warning("Nessun dato nel foglio.")
-        st.stop()
-
-    # KPI
-    totals = pd.to_numeric(df["total"].astype(str).str.replace(",", "."), errors="coerce").fillna(0)
+    totals = df["total"]
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Righe", len(df))
-    c2.metric("Fornitori unici", int(df["vendor"].nunique(dropna=True)))
-    c3.metric("Somma totali", f"{totals.sum():.2f}")
-    c4.metric("Nuove (NEW)", int((df["status"].astype(str) == "NEW").sum()))
+    c1.metric("Documenti", len(df))
+    c2.metric("Fornitori unici", df["vendor"].nunique())
+    c3.metric("Totale complessivo", f"{totals.sum():.2f}")
+    c4.metric("Da inviare", (df["status"] == "NEW").sum())
 
-    st.subheader("Tabella dati")
-    st.dataframe(df.drop(columns=["rawText"], errors="ignore"), use_container_width=True)
+    st.subheader("Elenco documenti")
+    st.dataframe(df, use_container_width=True)
 
-# -------------------- 3) Ricerca --------------------
+# ---------------------------------------------------
+# TOOL 3 - RICERCA & FILTRI
+# ---------------------------------------------------
+
 elif page.startswith("3"):
-    st.title("Tool 3 — Ricerca con filtri (Google Sheet)")
+    st.title("Ricerca & Filtri")
 
-    with st.sidebar:
-        vendor = st.text_input("Fornitore contiene")
-        status = st.selectbox("Status", ["", "NEW", "EMAILED"])
-        min_total = st.number_input("Totale minimo", value=0.0, step=1.0)
-        apply_max = st.checkbox("Applica totale massimo")
-        max_total = st.number_input("Totale massimo", value=0.0, step=1.0, disabled=not apply_max)
+    col1, col2, col3 = st.columns(3)
 
-    filters = {
-        "vendor": vendor,
-        "status": status,
-        "minTotal": min_total if min_total > 0 else None,
-        "maxTotal": max_total if apply_max else None
-    }
+    with col1:
+        vendor_filter = st.text_input("Fornitore contiene")
 
-    try:
-        res = gas_get("search", filters)
-    except Exception as e:
-        st.error(f"Errore chiamando GAS: {e}")
-        st.stop()
+    with col2:
+        status_filter = st.selectbox("Status", ["", "NEW", "EMAILED"])
 
-    if not res.get("ok"):
-        st.error(res)
-        st.stop()
+    with col3:
+        min_total = st.number_input("Totale minimo", 0.0)
 
-    df = safe_df(res.get("rows"))
-    st.caption(f"Risultati: {len(df)}")
-    st.dataframe(df.drop(columns=["rawText"], errors="ignore"), use_container_width=True)
+    filtered = df.copy()
 
-# -------------------- 4) Email --------------------
+    if vendor_filter:
+        filtered = filtered[filtered["vendor"].str.contains(vendor_filter, case=False)]
+
+    if status_filter:
+        filtered = filtered[filtered["status"] == status_filter]
+
+    if min_total > 0:
+        filtered = filtered[filtered["total"] >= min_total]
+
+    st.write(f"Risultati trovati: {len(filtered)}")
+    st.dataframe(filtered, use_container_width=True)
+
+# ---------------------------------------------------
+# TOOL 4 - EMAIL MOCK
+# ---------------------------------------------------
+
 else:
-    st.title("Tool 4 — Seleziona righe e invia email semi-automatiche")
+    st.title("Email semi-automatiche (UX Simulation)")
 
-    st.info("Serve che nel foglio ci sia una colonna `email` compilata per ogni riga da contattare.")
-
-    try:
-        res = gas_get("dashboard")
-    except Exception as e:
-        st.error(f"Errore chiamando GAS: {e}")
-        st.stop()
-
-    if not res.get("ok"):
-        st.error(res)
-        st.stop()
-
-    df = safe_df(res.get("rows"))
-    if df.empty:
-        st.warning("Nessun dato nel foglio.")
-        st.stop()
-
-    # editor con checkbox
-    df_view = df.drop(columns=["rawText"], errors="ignore").copy()
+    df_view = df.copy()
     df_view.insert(0, "select", False)
 
     edited = st.data_editor(
         df_view,
         use_container_width=True,
         num_rows="fixed",
-        column_config={"select": st.column_config.CheckboxColumn("Seleziona")}
+        column_config={
+            "select": st.column_config.CheckboxColumn("Seleziona")
+        }
     )
 
     selected = edited[edited["select"] == True].drop(columns=["select"])
-    st.write(f"Selezionate: **{len(selected)}**")
 
-    subject = st.text_input("Oggetto", "Richiesta informazioni")
+    st.write(f"Selezionate: {len(selected)}")
+
+    subject = st.text_input("Oggetto", "Richiesta informazioni documento")
     body = st.text_area(
-        "Corpo (placeholder: {{vendor}}, {{date}}, {{total}}, {{uniqueKey}})",
-        "Ciao {{vendor}},\n\nTi contatto in merito al documento {{uniqueKey}} del {{date}} (totale {{total}}).\n\nGrazie,\n"
+        "Testo email",
+        "Ciao {{vendor}},\n\nTi scrivo in merito al documento {{uniqueKey}} del {{date}}.\n\nGrazie."
     )
 
     if len(selected) > 0:
         first = selected.iloc[0].to_dict()
-        preview = (body
-            .replace("{{vendor}}", str(first.get("vendor", "")))
-            .replace("{{date}}", str(first.get("date", "")))
-            .replace("{{total}}", str(first.get("total", "")))
-            .replace("{{uniqueKey}}", str(first.get("uniqueKey", "")))
-        )
-        st.subheader("Preview (prima selezione)")
+
+        preview = body \
+            .replace("{{vendor}}", first["vendor"]) \
+            .replace("{{uniqueKey}}", first["uniqueKey"]) \
+            .replace("{{date}}", first["date"])
+
+        st.subheader("Preview email")
         st.code(preview)
 
-    if st.button("Invia email", type="primary", disabled=(len(selected) == 0)):
-        items = selected.to_dict(orient="records")
-        try:
-            res2 = gas_post("sendEmails", {"items": items, "subject": subject, "body": body}, timeout=90)
-        except Exception as e:
-            st.error(f"Errore chiamando GAS: {e}")
-            st.stop()
-
-        if res2.get("ok"):
-            st.success(f"Inviate: {len(res2.get('sent', []))} — Errori: {len(res2.get('failed', []))}")
-            if res2.get("failed"):
-                st.warning("Alcune email non sono partite:")
-                st.json(res2["failed"])
-        else:
-            st.error(res2)
+        if st.button("Simula invio email", type="primary"):
+            st.success("Email inviate (simulazione)")
