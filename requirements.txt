@@ -1,3 +1,6 @@
-streamlit
-requests
-pandas
+dash==2.17.1
+dash-bootstrap-components==1.6.0
+pandas==2.2.2
+requests==2.32.3
+gspread==6.1.2
+google-auth==2.33.0
