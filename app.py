@@ -1,494 +1,391 @@
-import streamlit as st
-import pandas as pd
+import os
+import json
 import random
 from datetime import datetime
-import streamlit.components.v1 as components
 
-st.set_page_config(page_title="OCR Dashboard UX", layout="wide")
+import pandas as pd
+import requests
 
-# ---------------------------------------------------
-# CSS: sidebar menu + spacing + dropdown menu style
-# ---------------------------------------------------
-st.markdown(
+from dash import Dash, dcc, html, Input, Output, State, callback_context
+import dash_bootstrap_components as dbc
+from dash.dash_table import DataTable
+
+# --- Optional (private sheets) ---
+import gspread
+from google.oauth2.service_account import Credentials
+
+
+# =========================================================
+# CONFIG GOOGLE SHEET
+# =========================================================
+SPREADSHEET_ID = "1P0dxL6YafUuRVhwYKGi0nG5aCYjqGa_UVSg1dn4uFh8"
+GID = 41334363  # dal tuo URL
+EXPORT_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=csv&gid={GID}"
+
+# Per foglio privato: imposta env var GOOGLE_SERVICE_ACCOUNT_JSON (stringa JSON)
+# e condividi il foglio con l'email del service account.
+SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
+
+
+# =========================================================
+# DATA LOADER
+# =========================================================
+def load_sheet_df() -> pd.DataFrame:
     """
-    <style>
-      section[data-testid="stSidebar"] .block-container{ padding-top: 1.2rem; }
+    Prova a caricare il foglio in 2 modi:
+    1) CSV export (foglio pubblico)
+    2) Google Sheets API (foglio privato) tramite service account
+    """
+    # 1) Public CSV export
+    try:
+        r = requests.get(EXPORT_CSV_URL, timeout=15)
+        if r.status_code == 200 and len(r.text) > 10 and "DOCTYPE html" not in r.text[:200]:
+            from io import StringIO
+            df = pd.read_csv(StringIO(r.text))
+            return df
+    except Exception:
+        pass
 
-      section[data-testid="stSidebar"] div.stButton > button{
+    # 2) Private via service account
+    if SERVICE_ACCOUNT_JSON:
+        info = json.loads(SERVICE_ACCOUNT_JSON)
+        scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+        gc = gspread.authorize(creds)
+
+        sh = gc.open_by_key(SPREADSHEET_ID)
+        ws = sh.get_worksheet_by_id(GID)
+        values = ws.get_all_values()
+
+        if not values or len(values) < 2:
+            return pd.DataFrame()
+
+        headers = values[0]
+        rows = values[1:]
+        df = pd.DataFrame(rows, columns=headers)
+        return df
+
+    # Se siamo qui: non è pubblico e non hai fornito credenziali
+    raise PermissionError(
+        "Impossibile leggere il Google Sheet: non è pubblico e manca GOOGLE_SERVICE_ACCOUNT_JSON."
+    )
+
+
+def df_b_to_i(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Prende le 8 colonne da B a I in base alla POSIZIONE.
+    (B=indice 1 ... I=indice 8 in zero-based)
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=[
+            "Fornitore", "Data fattura", "Codice fattura", "Articolo", "Quantità",
+            "Prezzo unitario (IVA escl.)", "Prezzo totale riga (IVA escl.)", "Totale documento (IVA escl.)"
+        ])
+
+    # se il DF ha meno di 9 colonne, ritorna vuoto
+    if df.shape[1] < 9:
+        return pd.DataFrame(columns=[
+            "Fornitore", "Data fattura", "Codice fattura", "Articolo", "Quantità",
+            "Prezzo unitario (IVA escl.)", "Prezzo totale riga (IVA escl.)", "Totale documento (IVA escl.)"
+        ])
+
+    subset = df.iloc[:, 1:9].copy()
+    subset.columns = [
+        "Fornitore", "Data fattura", "Codice fattura", "Articolo", "Quantità",
+        "Prezzo unitario (IVA escl.)", "Prezzo totale riga (IVA escl.)", "Totale documento (IVA escl.)"
+    ]
+    return subset
+
+
+def to_float(x):
+    if x is None:
+        return 0.0
+    s = str(x).strip()
+    if not s:
+        return 0.0
+    # supporto virgola decimale
+    s = s.replace(".", "").replace(",", ".") if (s.count(",") == 1 and s.count(".") >= 1) else s.replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+
+def compute_kpis(df_full: pd.DataFrame) -> dict:
+    """
+    KPI secondo le tue regole (posizionali sul foglio):
+    - Fatture scannerizzate = numero valori univoci presenti in colonna B
+    - Numero fornitori = numero valori univoci concatenando le colonne B e D
+    - Spesa totale = somma dei Totale documento (colonna I) per ogni valore univoco di (B+D)
+    """
+    if df_full is None or df_full.empty or df_full.shape[1] < 9:
+        return {"fatture": 0, "fornitori": 0, "spesa": 0.0}
+
+    col_b = df_full.iloc[:, 1].astype(str).str.strip()  # colonna B
+    col_d = df_full.iloc[:, 3].astype(str).str.strip()  # colonna D
+    col_i = df_full.iloc[:, 8]                          # colonna I
+
+    # Fatture scannerizzate: unique su B
+    fatture_scannerizzate = int(col_b.replace("", pd.NA).dropna().nunique())
+
+    # Numero fornitori: unique su (B+D)
+    key_bd = (col_b.fillna("") + "||" + col_d.fillna("")).replace("||", pd.NA)
+    numero_fornitori = int(key_bd.dropna().nunique())
+
+    # Spesa totale: dedup su (B+D), poi somma I
+    tmp = pd.DataFrame({"key": key_bd, "totdoc": col_i})
+    tmp = tmp[tmp["key"].notna()]
+    tmp["totdoc_num"] = tmp["totdoc"].apply(to_float)
+    tmp = tmp.drop_duplicates(subset=["key"], keep="first")
+    spesa_totale = float(tmp["totdoc_num"].sum())
+
+    return {"fatture": fatture_scannerizzate, "fornitori": numero_fornitori, "spesa": spesa_totale}
+
+
+# =========================================================
+# UI HELPERS
+# =========================================================
+def kpi_card(title: str, value: str):
+    return dbc.Card(
+        dbc.CardBody([
+            html.Div(title, className="text-muted", style={"fontSize": "0.9rem"}),
+            html.Div(value, style={"fontSize": "1.6rem", "fontWeight": 800}),
+        ]),
+        className="shadow-sm",
+    )
+
+
+# =========================================================
+# APP
+# =========================================================
+app = Dash(__name__, external_stylesheets=[dbc.themes.DARKLY], suppress_callback_exceptions=True)
+server = app.server
+
+app.index_string = """
+<!DOCTYPE html>
+<html>
+  <head>
+    {%metas%}
+    <title>Storico Aziendale</title>
+    {%favicon%}
+    {%css%}
+    <style>
+      body { background-color: #0b1220; }
+      .sidebar {
+        width: 290px;
+        position: fixed;
+        top: 0; left: 0; bottom: 0;
+        padding: 16px 14px;
+        background: rgba(255,255,255,0.03);
+        border-right: 1px solid rgba(255,255,255,0.08);
+        overflow-y: auto;
+      }
+      .content {
+        margin-left: 290px;
+        padding: 22px 26px;
+      }
+      .navbtn {
+        display: block;
         width: 100%;
         text-align: left;
-        padding: 0.9rem 1rem;
-        margin: 0.65rem 0;
+        padding: 14px 14px;
+        margin: 10px 0;
         border-radius: 14px;
-        border: 1px solid rgba(120,120,120,0.25);
-        background: rgba(255,255,255,0.04);
-        font-size: 1.05rem;
-        line-height: 1.2rem;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(255,255,255,0.02);
+        color: #e5e7eb;
+        text-decoration: none;
+        font-size: 1.02rem;
       }
-      section[data-testid="stSidebar"] div.stButton > button:hover{
-        border-color: rgba(120,120,120,0.55);
-        background: rgba(255,255,255,0.08);
-      }
-      .menu-active{
-        border-radius: 16px;
-        padding: 2px;
-        background: linear-gradient(90deg, rgba(99,102,241,0.35), rgba(16,185,129,0.25));
-      }
-      .menu-active section[data-testid="stSidebar"] div.stButton > button{
-        border-color: rgba(99,102,241,0.55) !important;
-        background: rgba(99,102,241,0.12) !important;
-      }
+      .navbtn:hover { background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.14); }
+      .navbtn.active { border-color: rgba(99,102,241,0.6); background: rgba(99,102,241,0.12); }
 
-      /* "popup-like" fallback panel */
-      .popup-like{
-        border: 1px solid rgba(120,120,120,0.35);
+      .logo {
+        display: inline-block;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,0.10);
+        background: rgba(255,255,255,0.02);
+        font-weight: 900;
+        letter-spacing: 0.04em;
+        cursor: pointer;
+        text-decoration: none;
+        color: #e5e7eb;
+      }
+      .hint { color: rgba(255,255,255,0.70); }
+      .panel {
+        border: 1px solid rgba(255,255,255,0.10);
         border-radius: 16px;
         padding: 16px;
         background: rgba(255,255,255,0.03);
       }
-
-      /* Dropdown container style (simile screenshot) */
-      .drop-panel{
-        border: 1px solid rgba(120,120,120,0.35);
-        border-radius: 14px;
-        background: rgba(17,24,39,0.95);
-        padding: 8px;
-        box-shadow: 0 10px 25px rgba(0,0,0,0.35);
-      }
-
-      /* Togli margini tra i bottoni della lista */
-      .drop-panel div.stButton > button{
-        width: 100%;
-        text-align: left;
-        padding: 0.7rem 0.8rem;
-        margin: 0.15rem 0;
-        border-radius: 10px;
-        border: 1px solid rgba(120,120,120,0.0);
-        background: rgba(255,255,255,0.0);
-        font-size: 1.0rem;
-      }
-      .drop-panel div.stButton > button:hover{
-        background: rgba(255,255,255,0.06);
-        border-color: rgba(120,120,120,0.12);
-      }
-
-      /* Spazio sopra il contenuto principale */
-      .block-container { padding-top: 1rem; }
     </style>
-    """,
-    unsafe_allow_html=True
+  </head>
+  <body>
+    {%app_entry%}
+    <footer>
+      {%config%}
+      {%scripts%}
+      {%renderer%}
+    </footer>
+  </body>
+</html>
+"""
+
+app.layout = html.Div([
+    dcc.Location(id="url"),
+    dcc.Store(id="store-data", data=None),
+    dcc.Store(id="store-error", data=None),
+
+    # Sidebar
+    html.Div([
+        html.A("LOGO", href="/", className="logo", id="logo-link"),
+        html.Div("Storico aziendale • fatture • spese", className="hint", style={"marginTop": "10px"}),
+
+        html.Hr(style={"borderColor": "rgba(255,255,255,0.10)", "marginTop": "14px"}),
+
+        html.Div("Funzioni", className="hint", style={"marginBottom": "8px"}),
+
+        html.A("🧾  Storico Fatture", href="/storico-fatture", id="nav-storico", className="navbtn"),
+
+        html.Hr(style={"borderColor": "rgba(255,255,255,0.10)", "marginTop": "14px"}),
+
+        dbc.Button("🔄 Aggiorna dati", id="btn-refresh", color="secondary", className="w-100"),
+        html.Div(id="last-refresh", className="hint", style={"marginTop": "10px", "fontSize": "0.9rem"}),
+
+    ], className="sidebar"),
+
+    # Content
+    html.Div(id="page-content", className="content"),
+])
+
+
+# =========================================================
+# DATA REFRESH
+# =========================================================
+@app.callback(
+    Output("store-data", "data"),
+    Output("store-error", "data"),
+    Output("last-refresh", "children"),
+    Input("btn-refresh", "n_clicks"),
+    State("store-data", "data"),
+    prevent_initial_call=False
 )
+def refresh_data(n, existing):
+    # al primo load: carico comunque
+    try:
+        df_full = load_sheet_df()
+        return df_full.to_dict("records"), None, f"Ultimo refresh: {datetime.now().strftime('%H:%M:%S')}"
+    except Exception as e:
+        # mantieni i dati esistenti se presenti
+        return existing, str(e), f"Errore refresh: {datetime.now().strftime('%H:%M:%S')}"
 
-# ---------------------------------------------------
-# Device detect (robusto su iOS/Cloud)
-# ---------------------------------------------------
-def detect_is_mobile() -> bool:
-    if "is_mobile" in st.session_state:
-        return st.session_state.is_mobile
 
-    qp_val = st.query_params.get("is_mobile", None)
-    if qp_val is not None:
-        st.session_state.is_mobile = (str(qp_val) == "1")
-        return st.session_state.is_mobile
+# =========================================================
+# ROUTER + NAV ACTIVE
+# =========================================================
+@app.callback(
+    Output("page-content", "children"),
+    Output("nav-storico", "className"),
+    Input("url", "pathname"),
+    State("store-data", "data"),
+    State("store-error", "data"),
+)
+def render_page(pathname, data, err):
+    nav_storico_class = "navbtn"
+    is_home = pathname in (None, "/", "")
 
-    components.html(
-        """
-        <script>
-        (function() {
-          try {
-            const ua = (navigator.userAgent || navigator.vendor || window.opera || "").toLowerCase();
-            const isMobileUA = /android|iphone|ipad|ipod|iemobile|blackberry|opera mini/i.test(ua);
-            const w = Math.max(document.documentElement.clientWidth || 0, window.innerWidth || 0);
-            const isMobileW = w <= 768;
-            const isMobile = (isMobileUA || isMobileW) ? "1" : "0";
+    # Homepage (nessuna funzione selezionata)
+    if is_home:
+        home = html.Div([
+            html.H2("Homepage"),
+            html.Div("Questa app traccia lo storico dell’azienda: fatture, fornitori e spese nel tempo.", className="hint"),
+            html.Br(),
+            html.Div(className="panel", children=[
+                html.H4("Cosa puoi fare qui"),
+                html.Ul([
+                    html.Li("Consultare lo storico fatture (KPI + tabella dettagli)."),
+                    html.Li("Cercare e filtrare informazioni (nelle prossime funzioni)."),
+                    html.Li("Automatizzare attività operative (nelle prossime funzioni)."),
+                ]),
+                html.Div("Seleziona una funzione dal menu a sinistra per iniziare.", className="hint"),
+            ])
+        ])
+        return home, nav_storico_class
 
-            const topUrl = new URL(window.top.location.href);
-            if (!topUrl.searchParams.has("is_mobile")) {
-              topUrl.searchParams.set("is_mobile", isMobile);
-              window.top.location.replace(topUrl.toString());
-            }
-          } catch (e) {}
-        })();
-        </script>
-        """,
-        height=0
-    )
-    return False
+    # Storico fatture
+    if pathname == "/storico-fatture":
+        nav_storico_class += " active"
 
-is_mobile = detect_is_mobile()
+        # Error banner se non riesco a leggere il foglio
+        if err and not data:
+            return html.Div([
+                html.H2("Storico Fatture"),
+                dbc.Alert(
+                    [
+                        html.Div("Non riesco a leggere il Google Sheet.", style={"fontWeight": 800}),
+                        html.Div(err),
+                        html.Br(),
+                        html.Div("Soluzioni:"),
+                        html.Ul([
+                            html.Li("Rendere il foglio pubblico (solo per demo) così funziona l’export CSV."),
+                            html.Li("Oppure usare Service Account: imposta GOOGLE_SERVICE_ACCOUNT_JSON e condividi il foglio col service account."),
+                        ]),
+                    ],
+                    color="danger",
+                ),
+            ]), nav_storico_class
 
-# ---------------------------------------------------
-# MOCK DATA
-# ---------------------------------------------------
-def generate_mock_data(n=25):
-    vendors = ["ABC Srl", "Tech Supply", "Global Parts", "Fast Logistics", "Blue Energy"]
-    statuses = ["NEW", "EMAILED"]
-    data = []
-    for i in range(n):
-        data.append({
-            "uniqueKey": f"DOC-{1000+i}",
-            "vendor": random.choice(vendors),
-            "date": datetime.now().strftime("%d/%m/%Y"),
-            "total": round(random.uniform(50, 1500), 2),
-            "status": random.choice(statuses),
-            "email": "info@example.com"
-        })
-    return pd.DataFrame(data)
+        df_full = pd.DataFrame(data or [])
+        kpis = compute_kpis(df_full)
+        df_table = df_b_to_i(df_full)
 
-if "data" not in st.session_state:
-    st.session_state.data = generate_mock_data()
+        content = html.Div([
+            html.H2("Storico Fatture"),
+            html.Div("KPI e dettaglio righe (colonne B → I del foglio).", className="hint"),
+            html.Hr(style={"borderColor": "rgba(255,255,255,0.10)"}),
 
-df = st.session_state.data
+            dbc.Row([
+                dbc.Col(kpi_card("Fatture scannerizzate", f"{kpis['fatture']}"), md=4),
+                dbc.Col(kpi_card("Numero fornitori", f"{kpis['fornitori']}"), md=4),
+                dbc.Col(kpi_card("Spesa totale", f"{kpis['spesa']:.2f} €"), md=4),
+            ], className="g-3"),
 
-# ---------------------------------------------------
-# SIDEBAR NAV (emoji menu)
-# ---------------------------------------------------
-if "page" not in st.session_state:
-    st.session_state.page = "OCR"
+            html.Div(style={"height": "14px"}),
 
-st.sidebar.markdown("## Menu")
-
-menu_items = [
-    ("OCR", "📷", "Scanner OCR"),
-    ("DASH", "📊", "Dashboard"),
-    ("SEARCH", "🔎", "Ricerca & Filtri"),
-    ("EMAIL", "✉️", "Email semi-automatiche"),
-]
-
-for key, emoji, label in menu_items:
-    is_active = (st.session_state.page == key)
-    if is_active:
-        st.sidebar.markdown('<div class="menu-active">', unsafe_allow_html=True)
-
-    if st.sidebar.button(f"{emoji}  {label}", use_container_width=True, key=f"menu_{key}"):
-        st.session_state.page = key
-        st.rerun()
-
-    if is_active:
-        st.sidebar.markdown("</div>", unsafe_allow_html=True)
-
-st.sidebar.divider()
-st.sidebar.caption(f"Dispositivo rilevato: {'📱 Mobile' if is_mobile else '💻 Desktop'}")
-if st.sidebar.button("🔄 Reset rilevamento dispositivo"):
-    st.query_params.pop("is_mobile", None)
-    st.session_state.pop("is_mobile", None)
-    st.rerun()
-
-page = st.session_state.page
-
-# ---------------------------------------------------
-# State per dropdown + popups
-# ---------------------------------------------------
-if "show_alt_menu" not in st.session_state:
-    st.session_state.show_alt_menu = False
-if "popup_manual" not in st.session_state:
-    st.session_state.popup_manual = False
-if "popup_mail" not in st.session_state:
-    st.session_state.popup_mail = False
-
-HAS_DIALOG = hasattr(st, "dialog")
-
-# ---------------------------------------------------
-# Dialog definitions (solo se supportate)
-# ---------------------------------------------------
-if HAS_DIALOG:
-    @st.dialog("Carica manualmente")
-    def manual_dialog():
-        st.write("Compila i dati della fattura (simulazione).")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            vendor = st.text_input("Fornitore *", placeholder="Es. ABC Srl", key="m_vendor")
-            invoice_no = st.text_input("Numero fattura *", placeholder="Es. 2026/001", key="m_invoice")
-            email = st.text_input("Email fornitore", placeholder="Es. info@fornitore.it", key="m_email")
-        with col2:
-            date = st.date_input("Data documento *", key="m_date")
-            total = st.number_input("Totale (€) *", min_value=0.0, step=1.0, format="%.2f", key="m_total")
-            status = st.selectbox("Stato", ["NEW", "EMAILED"], index=0, key="m_status")
-
-        st.text_area("Note", placeholder="Inserisci eventuali note...", key="m_notes")
-
-        a, b = st.columns(2)
-        with a:
-            if st.button("Annulla", use_container_width=True, key="m_cancel"):
-                st.session_state.popup_manual = False
-                st.rerun()
-        with b:
-            if st.button("Salva (mock)", type="primary", use_container_width=True, key="m_save"):
-                if not vendor.strip() or not invoice_no.strip() or total <= 0:
-                    st.error("Compila i campi obbligatori: Fornitore, Numero fattura e Totale > 0.")
-                else:
-                    new_row = {
-                        "uniqueKey": f"MAN-{random.randint(2000,3000)}",
-                        "vendor": vendor.strip(),
-                        "date": date.strftime("%d/%m/%Y"),
-                        "total": float(total),
-                        "status": status,
-                        "email": email.strip() if email else "info@example.com"
-                    }
-                    st.session_state.data = pd.concat(
-                        [st.session_state.data, pd.DataFrame([new_row])],
-                        ignore_index=True
-                    )
-                    st.session_state.popup_manual = False
-                    st.success("Fattura salvata (mock).")
-                    st.rerun()
-
-    @st.dialog("Inoltra via mail")
-    def mail_dialog():
-        st.markdown(
-            "inoltra alla seguente mail le fatture che ti interessa scannerizzare: "
-            "**prova@streamlit.it**"
-        )
-        st.write("")
-        if st.button("Chiudi", use_container_width=True, key="mail_close"):
-            st.session_state.popup_mail = False
-            st.rerun()
-
-# ---------------------------------------------------
-# TOOL 1 - OCR
-# ---------------------------------------------------
-if page == "OCR":
-    # Header con bottone in alto a destra
-    left, right = st.columns([0.72, 0.28], vertical_alignment="top")
-    with left:
-        st.title("Scanner OCR (Simulazione UX)")
-        st.caption("📱 Da mobile: scatta una foto. 💻 Da PC: carica un file dal computer.")
-    with right:
-        st.write("")
-        st.write("")
-        if st.button("🧾 Fattura alternativa", use_container_width=True, key="alt_btn"):
-            st.session_state.show_alt_menu = not st.session_state.show_alt_menu
-
-        # DROPDOWN: pannello verticale sotto il bottone (come screenshot)
-        if st.session_state.show_alt_menu:
-            st.markdown('<div class="drop-panel">', unsafe_allow_html=True)
-
-            # Riga 1
-            if st.button("⬆️  Digitalizar archivo/s", use_container_width=True, key="drop_upload"):
-                # Qui per ora non fai nulla (è solo UX), oppure puoi chiudere menu
-                st.session_state.show_alt_menu = False
-                st.toast("Opzione (UX) — Digitalizar archivo/s", icon="⬆️")
-                st.rerun()
-
-            # Riga 2 (manuale)
-            if st.button("✍️  Crear gasto manual", use_container_width=True, key="drop_manual"):
-                st.session_state.show_alt_menu = False
-                st.session_state.popup_manual = True
-                st.session_state.popup_mail = False
-                st.rerun()
-
-            # Riga 3 (mail)
-            if st.button("✉️  Por correo electrónico", use_container_width=True, key="drop_mail"):
-                st.session_state.show_alt_menu = False
-                st.session_state.popup_mail = True
-                st.session_state.popup_manual = False
-                st.rerun()
-
-            st.markdown("</div>", unsafe_allow_html=True)
-
-    st.divider()
-
-    # Pop-up rendering (dialog se possibile, altrimenti fallback)
-    if st.session_state.popup_manual:
-        if HAS_DIALOG:
-            manual_dialog()
-        else:
-            st.markdown('<div class="popup-like">', unsafe_allow_html=True)
-            st.subheader("Carica manualmente")
-            st.write("Compila i dati della fattura (simulazione).")
-
-            col1, col2 = st.columns(2)
-            with col1:
-                vendor = st.text_input("Fornitore *", placeholder="Es. ABC Srl", key="fm_vendor")
-                invoice_no = st.text_input("Numero fattura *", placeholder="Es. 2026/001", key="fm_invoice")
-                email = st.text_input("Email fornitore", placeholder="Es. info@fornitore.it", key="fm_email")
-            with col2:
-                date = st.date_input("Data documento *", key="fm_date")
-                total = st.number_input("Totale (€) *", min_value=0.0, step=1.0, format="%.2f", key="fm_total")
-                status = st.selectbox("Stato", ["NEW", "EMAILED"], index=0, key="fm_status")
-
-            st.text_area("Note", placeholder="Inserisci eventuali note...", key="fm_notes")
-
-            a, b = st.columns(2)
-            with a:
-                if st.button("Annulla", use_container_width=True, key="fm_cancel"):
-                    st.session_state.popup_manual = False
-                    st.rerun()
-            with b:
-                if st.button("Salva (mock)", type="primary", use_container_width=True, key="fm_save"):
-                    if not vendor.strip() or not invoice_no.strip() or total <= 0:
-                        st.error("Compila i campi obbligatori: Fornitore, Numero fattura e Totale > 0.")
-                    else:
-                        new_row = {
-                            "uniqueKey": f"MAN-{random.randint(2000,3000)}",
-                            "vendor": vendor.strip(),
-                            "date": date.strftime("%d/%m/%Y"),
-                            "total": float(total),
-                            "status": status,
-                            "email": email.strip() if email else "info@example.com"
-                        }
-                        st.session_state.data = pd.concat(
-                            [st.session_state.data, pd.DataFrame([new_row])],
-                            ignore_index=True
-                        )
-                        st.session_state.popup_manual = False
-                        st.success("Fattura salvata (mock).")
-                        st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
-
-    if st.session_state.popup_mail:
-        if HAS_DIALOG:
-            mail_dialog()
-        else:
-            st.markdown('<div class="popup-like">', unsafe_allow_html=True)
-            st.subheader("Inoltra via mail")
-            st.markdown(
-                "inoltra alla seguente mail le fatture che ti interessa scannerizzare: "
-                "**prova@streamlit.it**"
-            )
-            st.write("")
-            if st.button("Chiudi", use_container_width=True, key="fm_mail_close"):
-                st.session_state.popup_mail = False
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
-
-    # Journey acquisizione documento (Mobile camera only / Desktop upload only)
-    st.markdown("### 1) Acquisisci documento")
-
-    image_bytes = None
-    filename = None
-
-    if is_mobile:
-        st.info("Modalità mobile attiva: puoi scattare una foto.")
-        cam = st.camera_input("Scatta foto del documento")
-        if cam is not None:
-            image_bytes = cam.getvalue()
-            filename = "camera.jpg"
-    else:
-        st.info("Modalità desktop attiva: puoi solo caricare un file.")
-        up = st.file_uploader("Carica immagine (JPG/PNG)", type=["jpg", "jpeg", "png"])
-        if up is not None:
-            image_bytes = up.read()
-            filename = up.name
-
-    if image_bytes:
-        st.image(image_bytes, caption=f"Anteprima — {filename}", use_container_width=True)
-
-        st.markdown("### 2) Estrai dati (simulazione OCR)")
-        colA, colB = st.columns([1, 1])
-        with colA:
-            if st.button("Simula OCR", type="primary", use_container_width=True):
-                with st.spinner("Simulazione scansione..."):
-                    extracted = {
-                        "vendor": "ABC Srl",
-                        "date": datetime.now().strftime("%d/%m/%Y"),
-                        "total": 249.90
-                    }
-                    st.session_state.last_extracted = extracted
-                    st.success("OCR completato (mock)")
-        with colB:
-            if st.button("Reset estrazione", use_container_width=True):
-                st.session_state.last_extracted = None
-                st.rerun()
-
-        extracted = st.session_state.get("last_extracted")
-        if extracted:
-            st.subheader("Dati estratti")
-            st.json(extracted)
-
-            st.markdown("### 3) Salva nel database (mock)")
-            if st.button("Simula salvataggio su Sheet", use_container_width=True):
-                new_row = {
-                    "uniqueKey": f"DOC-{random.randint(2000, 3000)}",
-                    "vendor": extracted["vendor"],
-                    "date": extracted["date"],
-                    "total": extracted["total"],
-                    "status": "NEW",
-                    "email": "info@example.com"
-                }
-                st.session_state.data = pd.concat(
-                    [st.session_state.data, pd.DataFrame([new_row])],
-                    ignore_index=True
+            html.Div(className="panel", children=[
+                html.Div("Dettaglio", style={"fontWeight": 800, "marginBottom": "10px"}),
+                DataTable(
+                    id="table-storico",
+                    columns=[{"name": c, "id": c} for c in df_table.columns],
+                    data=df_table.to_dict("records"),
+                    page_size=12,
+                    sort_action="native",
+                    filter_action="native",
+                    style_table={"overflowX": "auto"},
+                    style_header={
+                        "backgroundColor": "rgba(255,255,255,0.05)",
+                        "border": "1px solid rgba(255,255,255,0.08)",
+                        "color": "#e5e7eb",
+                        "fontWeight": "700",
+                    },
+                    style_cell={
+                        "backgroundColor": "rgba(255,255,255,0.02)",
+                        "color": "#e5e7eb",
+                        "border": "1px solid rgba(255,255,255,0.06)",
+                        "padding": "10px",
+                        "whiteSpace": "normal",
+                        "height": "auto",
+                    },
                 )
-                st.success("Riga aggiunta (mock)")
+            ]),
+        ])
 
-# ---------------------------------------------------
-# TOOL 2 - DASHBOARD
-# ---------------------------------------------------
-elif page == "DASH":
-    st.title("Dashboard (Mock Data)")
-    totals = df["total"]
+        return content, nav_storico_class
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Documenti", len(df))
-    c2.metric("Fornitori unici", df["vendor"].nunique())
-    c3.metric("Totale complessivo", f"{totals.sum():.2f}")
-    c4.metric("Da inviare", (df["status"] == "NEW").sum())
+    # fallback -> homepage
+    return html.Div([dcc.Location(pathname="/", id="redir")]), nav_storico_class
 
-    st.subheader("Elenco documenti")
-    st.dataframe(df, use_container_width=True)
 
-# ---------------------------------------------------
-# TOOL 3 - SEARCH
-# ---------------------------------------------------
-elif page == "SEARCH":
-    st.title("Ricerca & Filtri")
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        vendor_filter = st.text_input("Fornitore contiene")
-    with col2:
-        status_filter = st.selectbox("Status", ["", "NEW", "EMAILED"])
-    with col3:
-        min_total = st.number_input("Totale minimo", 0.0)
-
-    filtered = df.copy()
-    if vendor_filter:
-        filtered = filtered[filtered["vendor"].str.contains(vendor_filter, case=False)]
-    if status_filter:
-        filtered = filtered[filtered["status"] == status_filter]
-    if min_total > 0:
-        filtered = filtered[filtered["total"] >= min_total]
-
-    st.write(f"Risultati trovati: {len(filtered)}")
-    st.dataframe(filtered, use_container_width=True)
-
-# ---------------------------------------------------
-# TOOL 4 - EMAIL
-# ---------------------------------------------------
-else:
-    st.title("Email semi-automatiche (UX Simulation)")
-
-    df_view = df.copy()
-    df_view.insert(0, "select", False)
-
-    edited = st.data_editor(
-        df_view,
-        use_container_width=True,
-        num_rows="fixed",
-        column_config={"select": st.column_config.CheckboxColumn("Seleziona")}
-    )
-
-    selected = edited[edited["select"] == True].drop(columns=["select"])
-    st.write(f"Selezionate: {len(selected)}")
-
-    subject = st.text_input("Oggetto", "Richiesta informazioni documento")
-    body = st.text_area(
-        "Testo email",
-        "Ciao {{vendor}},\n\nTi scrivo in merito al documento {{uniqueKey}} del {{date}}.\n\nGrazie."
-    )
-
-    if len(selected) > 0:
-        first = selected.iloc[0].to_dict()
-        preview = (body
-            .replace("{{vendor}}", first["vendor"])
-            .replace("{{uniqueKey}}", first["uniqueKey"])
-            .replace("{{date}}", first["date"])
-        )
-
-        st.subheader("Preview email")
-        st.code(preview)
-
-        if st.button("Simula invio email", type="primary"):
-            st.success("Email inviate (simulazione)")
+if __name__ == "__main__":
+    app.run_server(host="0.0.0.0", port=8050, debug=False)
