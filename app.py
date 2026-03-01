@@ -82,28 +82,33 @@ def load_sheet_df() -> pd.DataFrame:
 
 def df_b_to_i(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Prende le 8 colonne da B a I in base alla POSIZIONE.
-    (B=indice 1 ... I=indice 8 in zero-based)
+    Ritorna le 8 colonne B→I.
+    Se il foglio viene letto senza la colonna A (range usato parte da B),
+    allora df ha già 8 colonne e le prendiamo tutte.
+    Se invece df include A, allora prendiamo 1:9.
     """
-    if df is None or df.empty:
-        return pd.DataFrame(columns=[
-            "Fornitore", "Data fattura", "Codice fattura", "Articolo", "Quantità",
-            "Prezzo unitario (IVA escl.)", "Prezzo totale riga (IVA escl.)", "Totale documento (IVA escl.)"
-        ])
-
-    # se il DF ha meno di 9 colonne, ritorna vuoto
-    if df.shape[1] < 9:
-        return pd.DataFrame(columns=[
-            "Fornitore", "Data fattura", "Codice fattura", "Articolo", "Quantità",
-            "Prezzo unitario (IVA escl.)", "Prezzo totale riga (IVA escl.)", "Totale documento (IVA escl.)"
-        ])
-
-    subset = df.iloc[:, 1:9].copy()
-    subset.columns = [
+    cols_out = [
         "Fornitore", "Data fattura", "Codice fattura", "Articolo", "Quantità",
         "Prezzo unitario (IVA escl.)", "Prezzo totale riga (IVA escl.)", "Totale documento (IVA escl.)"
     ]
-    return subset
+
+    if df is None or df.empty:
+        return pd.DataFrame(columns=cols_out)
+
+    # Caso più comune: il range parte da B => 8 colonne totali
+    if df.shape[1] == 8:
+        out = df.copy()
+        out.columns = cols_out
+        return out
+
+    # Caso: include anche A => almeno 9 colonne
+    if df.shape[1] >= 9:
+        out = df.iloc[:, 1:9].copy()
+        out.columns = cols_out
+        return out
+
+    # Qualsiasi altro caso: non abbastanza colonne
+    return pd.DataFrame(columns=cols_out)
 
 
 def to_float(x):
@@ -122,17 +127,29 @@ def to_float(x):
 
 def compute_kpis(df_full: pd.DataFrame) -> dict:
     """
-    KPI secondo le tue regole (posizionali sul foglio):
+    KPI secondo le tue regole:
     - Fatture scannerizzate = numero valori univoci presenti in colonna B
     - Numero fornitori = numero valori univoci concatenando le colonne B e D
-    - Spesa totale = somma dei Totale documento (colonna I) per ogni valore univoco di (B+D)
+    - Spesa totale = somma colonna I per ogni chiave univoca (B+D)
+
+    Supporta 2 layout:
+    A) df ha 8 colonne (B→I)  => B=0, D=2, I=7
+    B) df ha >=9 colonne (A→I) => B=1, D=3, I=8
     """
-    if df_full is None or df_full.empty or df_full.shape[1] < 9:
+    if df_full is None or df_full.empty:
         return {"fatture": 0, "fornitori": 0, "spesa": 0.0}
 
-    col_b = df_full.iloc[:, 1].astype(str).str.strip()  # colonna B
-    col_d = df_full.iloc[:, 3].astype(str).str.strip()  # colonna D
-    col_i = df_full.iloc[:, 8]                          # colonna I
+    # mapping indici
+    if df_full.shape[1] == 8:
+        idx_b, idx_d, idx_i = 0, 2, 7
+    elif df_full.shape[1] >= 9:
+        idx_b, idx_d, idx_i = 1, 3, 8
+    else:
+        return {"fatture": 0, "fornitori": 0, "spesa": 0.0}
+
+    col_b = df_full.iloc[:, idx_b].astype(str).str.strip()
+    col_d = df_full.iloc[:, idx_d].astype(str).str.strip()
+    col_i = df_full.iloc[:, idx_i]
 
     # Fatture scannerizzate: unique su B
     fatture_scannerizzate = int(col_b.replace("", pd.NA).dropna().nunique())
