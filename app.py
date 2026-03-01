@@ -19,6 +19,7 @@ from google.oauth2.service_account import Credentials
 # CONFIG GOOGLE SHEET
 # =========================================================
 SPREADSHEET_ID = "1P0dxL6YafUuRVhwYKGi0nG5aCYjqGa_UVSg1dn4uFh8"
+SHEET_NAME = "Foglio1"
 GID = 41334363  # dal tuo URL
 EXPORT_CSV_URL = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/export?format=csv&gid={GID}"
 
@@ -32,38 +33,46 @@ SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 # =========================================================
 def load_sheet_df() -> pd.DataFrame:
     """
-    Prova a caricare il foglio in 2 modi:
-    1) CSV export (foglio pubblico)
-    2) Google Sheets API (foglio privato) tramite service account
+    Carica il Google Sheet PRIVATO via Service Account.
+    Prima prova per nome tab (SHEET_NAME), fallback su GID.
     """
-    # 1) Public CSV export
+    if not SERVICE_ACCOUNT_JSON:
+        raise PermissionError("Manca GOOGLE_SERVICE_ACCOUNT_JSON (secret in Codespaces).")
+
+    info = json.loads(SERVICE_ACCOUNT_JSON)
+    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    creds = Credentials.from_service_account_info(info, scopes=scopes)
+    gc = gspread.authorize(creds)
+
+    sh = gc.open_by_key(SPREADSHEET_ID)
+
+    # 1) prova per nome (Foglio1)
+    ws = None
     try:
-        r = requests.get(EXPORT_CSV_URL, timeout=15)
-        if r.status_code == 200 and len(r.text) > 10 and "DOCTYPE html" not in r.text[:200]:
-            from io import StringIO
-            df = pd.read_csv(StringIO(r.text))
-            return df
+        ws = sh.worksheet(SHEET_NAME)
     except Exception:
-        pass
+        ws = None
 
-    # 2) Private via service account
-    if SERVICE_ACCOUNT_JSON:
-        info = json.loads(SERVICE_ACCOUNT_JSON)
-        scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-        creds = Credentials.from_service_account_info(info, scopes=scopes)
-        gc = gspread.authorize(creds)
+    # 2) fallback per id/gid
+    if ws is None:
+        try:
+            ws = sh.get_worksheet_by_id(GID)
+        except Exception:
+            ws = None
 
-        sh = gc.open_by_key(SPREADSHEET_ID)
-        ws = sh.get_worksheet_by_id(GID)
-        values = ws.get_all_values()
+    if ws is None:
+        raise ValueError(f"Worksheet non trovata. Controlla SHEET_NAME='{SHEET_NAME}' oppure GID={GID}.")
 
-        if not values or len(values) < 2:
-            return pd.DataFrame()
+    values = ws.get_all_values()
 
-        headers = values[0]
-        rows = values[1:]
-        df = pd.DataFrame(rows, columns=headers)
-        return df
+    # Se hai solo header o vuoto, ritorna df vuoto
+    if not values or len(values) < 2:
+        return pd.DataFrame()
+
+    headers = values[0]
+    rows = values[1:]
+    df = pd.DataFrame(rows, columns=headers)
+    return df
 
     # Se siamo qui: non è pubblico e non hai fornito credenziali
     raise PermissionError(
